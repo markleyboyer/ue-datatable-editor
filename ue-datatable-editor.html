@@ -1,0 +1,942 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>UE DataTable Editor</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/ag-grid-community@31.3.2/styles/ag-grid.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/ag-grid-community@31.3.2/styles/ag-theme-alpine-dark.css">
+<script src="https://cdn.jsdelivr.net/npm/ag-grid-community@31.3.2/dist/ag-grid-community.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2.2.0/dist/chartjs-plugin-datalabels.min.js"></script>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #1a1a2e; color: #e0e0e0; height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
+
+/* ── Toolbar ── */
+#toolbar { background: #16213e; padding: 7px 12px; display: flex; align-items: center; gap: 6px; border-bottom: 1px solid #0f3460; flex-shrink: 0; }
+.btn { background: #0f3460; color: #e0e0e0; border: 1px solid #2a4a80; padding: 5px 12px; border-radius: 4px; cursor: pointer; font-size: 12px; white-space: nowrap; }
+.btn:hover { background: #1a5a9e; }
+.btn:disabled { opacity: 0.4; cursor: default; }
+.btn.green  { background: #1a4a30; border-color: #2d7a50; }
+.btn.green:hover { background: #226040; }
+.btn.purple { background: #3a2060; border-color: #6a4aaa; }
+.btn.purple:hover { background: #4a2a80; }
+.tsep { width: 1px; height: 20px; background: #2a3a60; margin: 0 2px; flex-shrink: 0; }
+#file-name   { color: #7a9abf; font-size: 11px; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 260px; }
+#table-badge { background: #0a1a30; border: 1px solid #2a4a80; padding: 2px 10px; border-radius: 10px; font-size: 11px; color: #8aaad0; }
+#status-msg  { color: #7a9abf; font-size: 11px; margin-left: auto; white-space: nowrap; }
+
+/* ── Selection bar  (sits between toolbar and grid) ── */
+#sel-bar {
+  background: #0d1e38; border-bottom: 2px solid #2a5aaa;
+  padding: 5px 12px; display: none; align-items: center; gap: 8px;
+  font-size: 12px; flex-shrink: 0;
+}
+#sel-bar.on { display: flex; }
+#sel-info { color: #90b8e8; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1; min-width: 0; }
+#sel-val {
+  background: #06101e; color: #e0e0e0; border: 1px solid #3a6aaa;
+  padding: 4px 9px; border-radius: 3px; font-size: 12px; width: 160px;
+}
+#sel-val:focus { outline: none; border-color: #5a9ae0; box-shadow: 0 0 0 2px rgba(90,154,224,0.2); }
+#sel-val:disabled { opacity: 0.35; }
+#sel-hint { color: #3a5a80; font-size: 11px; white-space: nowrap; }
+/* Range (min/max) inputs — swapped in for range-type fields */
+#sel-range { display: none; align-items: center; gap: 6px; }
+#sel-range.on { display: flex; }
+#sel-range label { color: #8aaad0; font-size: 11px; }
+#sel-min, #sel-max { background: #06101e; color: #e0e0e0; border: 1px solid #3a6aaa; padding: 4px 7px; border-radius: 3px; font-size: 12px; width: 76px; }
+#sel-min:focus, #sel-max:focus { outline: none; border-color: #5a9ae0; box-shadow: 0 0 0 2px rgba(90,154,224,0.2); }
+
+/* ── Main layout ── */
+#main { display: flex; flex: 1; overflow: hidden; }
+#grid-wrap { flex: 1; overflow: hidden; }
+#grid { width: 100%; height: 100%; }
+
+/* ── Sidebar ── */
+#sidebar { width: 300px; background: #16213e; border-left: 1px solid #0f3460; display: flex; flex-direction: column; overflow-y: auto; flex-shrink: 0; }
+.sidebar-section { border-bottom: 1px solid #0f3460; }
+.sidebar-section h4 { padding: 8px 12px; font-size: 11px; color: #8aaad0; text-transform: uppercase; letter-spacing: 0.5px; background: #10182e; }
+.chart-wrap { padding: 10px 12px 4px; }
+
+/* Cell-selection highlights are injected dynamically via a <style> element
+   (#sel-hl-css) so AG Grid re-renders can never wipe them. */
+
+/* ── Modal ── */
+#modal-bg { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.75); z-index: 100; justify-content: center; align-items: center; }
+#modal-bg.on { display: flex; }
+#modal { background: #16213e; border: 1px solid #3a5a90; border-radius: 8px; width: 760px; max-width: 96vw; max-height: 88vh; display: flex; flex-direction: column; box-shadow: 0 8px 40px rgba(0,0,0,0.6); }
+#modal-head { padding: 12px 16px; border-bottom: 1px solid #0f3460; display: flex; justify-content: space-between; align-items: center; flex-shrink: 0; }
+#modal-head h3 { font-size: 14px; color: #c0d8f0; }
+#modal-body { flex: 1; overflow-y: auto; padding: 12px 14px; }
+#modal-foot { padding: 8px 16px; border-top: 1px solid #0f3460; display: flex; justify-content: space-between; align-items: center; flex-shrink: 0; }
+
+/* ── Variant rows ── */
+.vrow { background: #0c1628; border: 1px solid #1e3558; border-radius: 6px; padding: 10px; margin-bottom: 8px; display: grid; grid-template-columns: 64px 1fr; gap: 10px; }
+.vthumb { width: 64px; height: 64px; background: #08101e; border-radius: 4px; border: 1px solid #1e3558; display: flex; align-items: center; justify-content: center; overflow: hidden; color: #4a6a9a; font-size: 9px; text-align: center; padding: 3px; line-height: 1.3; }
+.vthumb img { width: 100%; height: 100%; object-fit: cover; }
+.vfields { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 6px; }
+.vfield { display: flex; flex-direction: column; gap: 2px; }
+.vfield label { font-size: 10px; color: #6a8ab0; text-transform: uppercase; letter-spacing: 0.4px; }
+.vfield input, .vfield select { background: #08101e; color: #e0e0e0; border: 1px solid #1e3558; padding: 4px 7px; border-radius: 3px; font-size: 12px; width: 100%; }
+.vfield input:focus, .vfield select:focus { outline: none; border-color: #4a7ac0; }
+.vfield.full { grid-column: 1 / -1; }
+.vdel { background: none; border: none; color: #cc5555; cursor: pointer; font-size: 11px; padding: 2px 6px; float: right; }
+.vdel:hover { color: #ff5555; }
+.vrow-num { font-size: 10px; color: #4a6a9a; margin-bottom: 4px; grid-column: 1 / -1; }
+
+/* ── AG Grid theme tweaks ── */
+.ag-theme-alpine-dark {
+  --ag-background-color: #0e1828;
+  --ag-odd-row-background-color: #111e30;
+  --ag-header-background-color: #0a1422;
+  --ag-border-color: #1e3050;
+  --ag-row-hover-color: #162038;
+}
+</style>
+</head>
+<body>
+
+<div id="toolbar">
+  <button class="btn" onclick="openFile()">📂 Open CSV</button>
+  <button class="btn green" onclick="saveFile()">💾 Save CSV</button>
+  <div class="tsep"></div>
+  <button class="btn purple" onclick="openThumbs()">🖼 Thumbnails Folder</button>
+  <button class="btn" onclick="addRow()">+ Add Row</button>
+  <div class="tsep"></div>
+  <span id="table-badge">No file loaded</span>
+  <span id="file-name"></span>
+  <span id="status-msg"></span>
+</div>
+
+<!-- Selection bar: visible when cells are highlighted, lives above the grid -->
+<div id="sel-bar">
+  <button class="btn" onclick="clearSel()" title="Clear selection (Esc)">✕</button>
+  <span id="sel-info"></span>
+  <!-- Single-value input (most fields) -->
+  <input id="sel-val" type="text" placeholder="new value" autocomplete="off">
+  <button id="sel-apply" class="btn purple" onclick="applySelEdit()">Apply ↵</button>
+  <!-- Range input (SlopeRange, AspectRange, WetnessRange, MicroTopoRange) -->
+  <div id="sel-range">
+    <label>Min</label><input id="sel-min" type="number" step="0.01" placeholder="0.00">
+    <label>Max</label><input id="sel-max" type="number" step="0.01" placeholder="1.00">
+    <button class="btn purple" onclick="applySelEdit()">Apply ↵</button>
+  </div>
+  <span id="sel-hint">Click · Shift+click to extend · Ctrl+click to add</span>
+</div>
+
+<div id="main">
+  <div id="grid-wrap">
+    <div id="grid" class="ag-theme-alpine-dark"></div>
+  </div>
+
+  <div id="sidebar">
+    <div class="sidebar-section">
+      <h4 id="chart1-label">Species Distribution</h4>
+      <div class="chart-wrap"><canvas id="chart1" height="180"></canvas></div>
+    </div>
+    <div class="sidebar-section">
+      <h4 id="chart2-label">Age Class Distribution</h4>
+      <div class="chart-wrap"><canvas id="chart2" height="180"></canvas></div>
+    </div>
+  </div>
+</div>
+
+<!-- Variants Modal -->
+<div id="modal-bg">
+  <div id="modal">
+    <div id="modal-head">
+      <h3 id="modal-title">Mesh Variants</h3>
+      <button class="btn" onclick="closeModal()">✕ Close</button>
+    </div>
+    <div id="modal-body"></div>
+    <div id="modal-foot">
+      <button class="btn" onclick="addVariant()">+ Add Variant</button>
+      <button class="btn green" onclick="saveVariants()">✓ Save Variants</button>
+    </div>
+  </div>
+</div>
+
+<script>
+// ═══════════════════════════════════════════════════════
+// STATE
+// ═══════════════════════════════════════════════════════
+let gridApi      = null;
+let fileHandle   = null;
+let thumbDir     = null;
+let thumbCache   = {};
+let tableType    = null;   // 'species' | 'ecosystem'
+let origHeaders  = [];
+
+// Cell selection
+const selectedCells = new Set();  // "rowId||field"
+let anchorCell = null;            // { rowId, field } — pivot for Shift-click
+
+// Modal
+let modalRowNode  = null;
+let modalVariants = [];
+
+// Charts
+let chart1 = null, chart2 = null;
+
+const AGE_CLASSES  = ['Seedling', 'Sapling', 'Mature', 'Dead'];
+const RANGE_FIELDS = new Set(['SlopeRange', 'AspectRange', 'WetnessRange', 'MicroTopoRange']);
+
+// ═══════════════════════════════════════════════════════
+// UE FORMAT HELPERS
+// ═══════════════════════════════════════════════════════
+const ff = n => parseFloat(n || 0).toFixed(6);
+
+function parseVec2(s) {
+  const m = String(s).match(/X=([\d.eE+-]+),Y=([\d.eE+-]+)/);
+  if (m) return { x: m[1], y: m[2] };
+  const p = String(s).split(',');
+  return p.length === 2 ? { x: p[0].trim(), y: p[1].trim() } : { x: '0', y: '1' };
+}
+function parseColor(s) {
+  const m = String(s).match(/R=([\d.]+),G=([\d.]+),B=([\d.]+),A=([\d.]+)/);
+  return m ? { r: +m[1], g: +m[2], b: +m[3], a: +m[4] } : { r: 1, g: 1, b: 1, a: 1 };
+}
+function colorHex(c) {
+  const h = v => Math.round(Math.min(1, Math.max(0, v)) * 255).toString(16).padStart(2, '0');
+  return `#${h(c.r)}${h(c.g)}${h(c.b)}`;
+}
+
+// ═══════════════════════════════════════════════════════
+// FLOAT FORMATTING
+// If the user types a whole number into a field whose existing
+// values carry 6 decimal places, auto-append ".000000".
+// ═══════════════════════════════════════════════════════
+function maybeFormatFloat(val, field) {
+  const trimmed = val.trim();
+  // Only act if it's a bare integer (no dot)
+  if (!/^-?\d+$/.test(trimmed)) return trimmed;
+
+  // Peek at an existing cell to see if the field stores floats
+  for (const key of selectedCells) {
+    const [rowId, f] = key.split('||');
+    if (f !== field) continue;
+    const node = gridApi.getRowNode(rowId);
+    const existing = String(node?.data[field] ?? '');
+    if (/^\d+\.\d+$/.test(existing)) return parseFloat(trimmed).toFixed(6);
+    break;
+  }
+  return trimmed;
+}
+
+// ═══════════════════════════════════════════════════════
+// MESH VARIANTS  parse / serialize
+// ═══════════════════════════════════════════════════════
+function parseMeshVariants(raw) {
+  if (!raw || raw.trim() === '' || raw.trim() === '()') return [];
+  let s = raw.trim();
+  if (s[0] === '(' && s[s.length - 1] === ')') s = s.slice(1, -1);
+
+  const parts = [];
+  let depth = 0, start = 0;
+  for (let i = 0; i < s.length; i++) {
+    if (s[i] === '(') depth++;
+    else if (s[i] === ')') {
+      depth--;
+      if (depth === 0) {
+        parts.push(s.slice(start, i + 1).trim());
+        while (s[i + 1] === ',' || s[i + 1] === ' ') i++;
+        start = i + 1;
+      }
+    }
+  }
+  if (start < s.length) parts.push(s.slice(start).trim());
+
+  return parts.filter(Boolean).map(part => {
+    if (part[0] === '(' && part[part.length - 1] === ')') part = part.slice(1, -1);
+    const obj = {};
+    let i = 0;
+    while (i < part.length) {
+      const eq = part.indexOf('=', i);
+      if (eq === -1) break;
+      const key = part.slice(i, eq);
+      i = eq + 1;
+      if (part[i] === '"') {
+        i++;
+        const end = part.indexOf('"', i);
+        obj[key] = part.slice(i, end);
+        i = end + 1;
+        if (part[i] === ',') i++;
+      } else if (part[i] === '(') {
+        let d = 0, st = i;
+        while (i < part.length) {
+          if (part[i] === '(') d++;
+          else if (part[i] === ')') { d--; if (d === 0) { i++; break; } }
+          i++;
+        }
+        obj[key] = part.slice(st, i);
+        if (part[i] === ',') i++;
+      } else {
+        const end = part.indexOf(',', i);
+        if (end === -1) { obj[key] = part.slice(i); break; }
+        obj[key] = part.slice(i, end);
+        i = end + 1;
+      }
+    }
+    if (obj['ScaleRange']) {
+      const m = obj['ScaleRange'].match(/X=([\d.eE+-]+),Y=([\d.eE+-]+)/);
+      if (m) { obj._scaleX = m[1]; obj._scaleY = m[2]; }
+    }
+    return obj;
+  });
+}
+
+function serializeMeshVariants(variants) {
+  const entries = variants.map(v => {
+    const mesh  = v['Mesh'] || '';
+    const age   = v['Age Class'] || 'Mature';
+    const aw    = ff(v['AgeClassWeight']);
+    const sx    = ff(v['_scaleX']);
+    const sy    = ff(v['_scaleY']);
+    const align = ff(v['AlignToSurface']);
+    const z     = ff(v['ZPositionOffset']);
+    return `(Mesh="${mesh}",Age Class=${age},AgeClassWeight=${aw},ScaleRange=(X=${sx},Y=${sy}),AlignToSurface=${align},ZPositionOffset=${z})`;
+  });
+  return `(${entries.join(',')})`;
+}
+
+// ═══════════════════════════════════════════════════════
+// TABLE TYPE
+// ═══════════════════════════════════════════════════════
+function detectType(headers) {
+  if (headers.includes('MeshVariants')) return 'species';
+  if (headers.includes('SpeciesList'))  return 'ecosystem';
+  return 'generic';
+}
+
+// ═══════════════════════════════════════════════════════
+// CELL SELECTION
+// ═══════════════════════════════════════════════════════
+const cellKey = (rowId, field) => `${rowId}||${field}`;
+
+// Inject CSS rules that target cells by their AG Grid row-id / col-id attributes.
+// This lives entirely outside AG Grid's DOM so re-renders can never wipe the highlight.
+function applySelHighlights() {
+  let css = '';
+  selectedCells.forEach(key => {
+    const [rowId, field] = key.split('||');
+    // Escape backslashes and double-quotes for use inside a CSS attribute string
+    const r = rowId.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+    const f = field.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+    css += `#grid .ag-row[row-id="${r}"] .ag-cell[col-id="${f}"]`
+         + `{ background-color:#1a3d78!important; color:#d8eeff!important; border-left:2px solid #4a8ae0!important; }\n`;
+  });
+  let el = document.getElementById('sel-hl-css');
+  if (!el) { el = document.createElement('style'); el.id = 'sel-hl-css'; document.head.appendChild(el); }
+  el.textContent = css;  // empty string → clears all highlights
+}
+
+function handleCellClick(params) {
+  const { node, column, event } = params;
+  const field = column.getColId();
+
+  // MeshVariants opens its own modal
+  if (field === 'MeshVariants') { openModal(node); return; }
+
+  const key = cellKey(node.id, field);
+
+  if (event.ctrlKey || event.metaKey) {
+    // Toggle this individual cell (allows cross-column selection)
+    if (selectedCells.has(key)) selectedCells.delete(key);
+    else                         selectedCells.add(key);
+    anchorCell = { rowId: node.id, field };
+
+  } else if (event.shiftKey && anchorCell && anchorCell.field === field) {
+    // Extend range within the same column from anchor to here
+    const allNodes = [];
+    params.api.forEachNodeAfterFilterAndSort(n => allNodes.push(n));
+    const ai = allNodes.findIndex(n => n.id === anchorCell.rowId);
+    const ci = allNodes.findIndex(n => n.id === node.id);
+    const [lo, hi] = [Math.min(ai, ci), Math.max(ai, ci)];
+    for (let i = lo; i <= hi; i++) selectedCells.add(cellKey(allNodes[i].id, field));
+
+  } else {
+    // Plain click — select only this cell, deselect everything else
+    selectedCells.clear();
+    selectedCells.add(key);
+    anchorCell = { rowId: node.id, field };
+  }
+
+  applySelHighlights();
+  updateSelBar();
+}
+
+// ═══════════════════════════════════════════════════════
+// SELECTION BAR
+// ═══════════════════════════════════════════════════════
+function updateSelBar() {
+  const bar   = document.getElementById('sel-bar');
+  const info  = document.getElementById('sel-info');
+  const input = document.getElementById('sel-val');
+  const apply = document.getElementById('sel-apply');
+  const range = document.getElementById('sel-range');
+  const minEl = document.getElementById('sel-min');
+  const maxEl = document.getElementById('sel-max');
+
+  if (selectedCells.size === 0) { bar.classList.remove('on'); return; }
+  bar.classList.add('on');
+
+  const fields    = new Set([...selectedCells].map(k => k.split('||')[1]));
+  const colCount  = fields.size;
+  const cellCount = selectedCells.size;
+
+  if (colCount === 1) {
+    const field   = [...fields][0];
+    const colDef  = gridApi.getColumn(field)?.getColDef();
+    const colName = colDef?.headerName || field;
+
+    info.textContent = `${colName}  ·  ${cellCount} cell${cellCount !== 1 ? 's' : ''} selected`;
+
+    // Collect existing values
+    const vals = new Set();
+    selectedCells.forEach(k => {
+      const [rowId] = k.split('||');
+      const node = gridApi.getRowNode(rowId);
+      if (node) vals.add(String(node.data[field] ?? ''));
+    });
+    const sameVal = vals.size === 1 ? [...vals][0] : null;
+
+    if (RANGE_FIELDS.has(field)) {
+      // Range field: show min/max inputs, hide single input
+      input.style.display = 'none';
+      apply.style.display = 'none';
+      range.classList.add('on');
+      if (sameVal) {
+        const v = parseVec2(sameVal);
+        minEl.value = parseFloat(v.x);
+        maxEl.value = parseFloat(v.y);
+      } else {
+        minEl.value = ''; maxEl.value = '';
+        minEl.placeholder = 'min'; maxEl.placeholder = 'max';
+      }
+      minEl.focus();
+    } else {
+      // Normal field: show single input, hide range inputs
+      input.style.display = '';
+      apply.style.display = '';
+      range.classList.remove('on');
+      input.value       = sameVal ?? '';
+      input.placeholder = sameVal === null ? 'multiple values…' : '';
+      input.disabled    = false;
+      apply.disabled    = false;
+      // Don't auto-focus the input — focusing an external element causes AG Grid
+      // to re-render the previously-focused cell, wiping our cell-sel class.
+    }
+
+  } else {
+    info.textContent  = `${cellCount} cells in ${colCount} columns · Ctrl+click within one column to bulk-edit`;
+    input.style.display = ''; apply.style.display = '';
+    range.classList.remove('on');
+    input.value = ''; input.placeholder = 'select one column';
+    input.disabled = true; apply.disabled = true;
+  }
+}
+
+function clearSel() {
+  selectedCells.clear();
+  anchorCell = null;
+  applySelHighlights();
+  document.getElementById('sel-bar').classList.remove('on');
+}
+
+function applySelEdit() {
+  const fields = new Set([...selectedCells].map(k => k.split('||')[1]));
+  if (fields.size !== 1) return;
+  const field = [...fields][0];
+
+  let val;
+  if (RANGE_FIELDS.has(field)) {
+    // Serialize as UE Vector2D: (X=0.000000,Y=1.000000)
+    const minRaw = document.getElementById('sel-min').value;
+    const maxRaw = document.getElementById('sel-max').value;
+    val = `(X=${ff(minRaw)},Y=${ff(maxRaw)})`;
+  } else {
+    // Auto-format whole numbers to match the float precision of the field
+    val = maybeFormatFloat(document.getElementById('sel-val').value, field);
+    document.getElementById('sel-val').value = val;
+  }
+
+  let count = 0;
+  selectedCells.forEach(k => {
+    const [rowId] = k.split('||');
+    const node = gridApi.getRowNode(rowId);
+    if (node) { node.setDataValue(field, val); count++; }
+  });
+
+  updateCharts();
+  setTimeout(applySelHighlights, 0);
+  setStatus(`"${val}" → ${count} cell${count !== 1 ? 's' : ''} in ${field}`);
+}
+
+// Keyboard shortcuts on all selection bar inputs
+document.addEventListener('DOMContentLoaded', () => {
+  ['sel-val', 'sel-min', 'sel-max'].forEach(id => {
+    document.getElementById(id).addEventListener('keydown', e => {
+      if (e.key === 'Enter')  { e.preventDefault(); applySelEdit(); }
+      if (e.key === 'Escape') { e.preventDefault(); clearSel(); }
+    });
+  });
+});
+
+// ═══════════════════════════════════════════════════════
+// CELL RENDERERS
+// ═══════════════════════════════════════════════════════
+function variantRenderer(p) {
+  const n = parseMeshVariants(p.value).length;
+  return `<span style="color:#7EC8F8;cursor:pointer;user-select:none">▣ ${n} variant${n !== 1 ? 's' : ''}</span>`;
+}
+function colorRenderer(p) {
+  const hex = colorHex(parseColor(p.value));
+  return `<span style="display:inline-flex;align-items:center;gap:5px">
+    <span style="width:14px;height:14px;background:${hex};border-radius:2px;border:1px solid #444;display:inline-block;flex-shrink:0"></span>
+    <span style="font-size:11px;color:#aaa">${hex}</span>
+  </span>`;
+}
+function rangeRenderer(p) {
+  if (!p.value) return '';
+  const v = parseVec2(p.value);
+  return `${parseFloat(v.x).toFixed(2)} – ${parseFloat(v.y).toFixed(2)}`;
+}
+
+// ═══════════════════════════════════════════════════════
+// COLUMN DEFINITIONS
+// ═══════════════════════════════════════════════════════
+function buildColDefs(type, headers) {
+  const keyCol = {
+    field: '_key', headerName: headers[0],
+    editable: true, pinned: 'left', width: 160,
+    cellStyle: { fontWeight: '600', color: '#c0d8f8' }
+  };
+
+  if (type === 'species') return [
+    keyCol,
+    { field: 'SpeciesWeight',      headerName: 'Weight',    editable: true, width: 80,  type: 'numericColumn' },
+    { field: 'StemsPerHectare',    headerName: 'Stems/ha',  editable: true, width: 90,  type: 'numericColumn' },
+    { field: 'SlopeRange',         headerName: 'Slope',     editable: true, width: 110, cellRenderer: rangeRenderer },
+    { field: 'AspectRange',        headerName: 'Aspect',    editable: true, width: 110, cellRenderer: rangeRenderer },
+    { field: 'WetnessRange',       headerName: 'Wetness',   editable: true, width: 110, cellRenderer: rangeRenderer },
+    { field: 'MicroTopoRange',     headerName: 'MicroTopo', editable: true, width: 110, cellRenderer: rangeRenderer },
+    { field: 'SeedlingAgeWeight',  headerName: 'Seedling',  editable: true, width: 82,  type: 'numericColumn' },
+    { field: 'SaplingAgeWeight',   headerName: 'Sapling',   editable: true, width: 82,  type: 'numericColumn' },
+    { field: 'MatureAgeWeight',    headerName: 'Mature',    editable: true, width: 82,  type: 'numericColumn' },
+    { field: 'DeadAgeWeight',      headerName: 'Dead',      editable: true, width: 82,  type: 'numericColumn' },
+    { field: 'Collision',          headerName: 'Collision', editable: true, width: 90,
+      cellEditor: 'agSelectCellEditor', cellEditorParams: { values: ['True', 'False'] } },
+    { field: 'MeshVariants', headerName: 'Mesh Variants', editable: false, width: 130, cellRenderer: variantRenderer }
+  ];
+
+  if (type === 'ecosystem') return [
+    keyCol,
+    { field: 'EcosystemVisible',     headerName: 'Visible',    editable: true, width: 80,
+      cellEditor: 'agSelectCellEditor', cellEditorParams: { values: ['True', 'False'] } },
+    { field: 'EcosystemDensity',     headerName: 'Density',    editable: true, width: 80,  type: 'numericColumn' },
+    { field: 'EcosystemColor',       headerName: 'Color',      editable: true, width: 90,  cellRenderer: colorRenderer },
+    { field: 'SpeciesList',          headerName: 'Species DT', editable: true, width: 300 },
+    { field: 'EdgeBlendDistance',    headerName: 'Edge Blend', editable: true, width: 90,  type: 'numericColumn' },
+    { field: 'SpatialNoiseSize',     headerName: 'Noise Size', editable: true, width: 90,  type: 'numericColumn' },
+    { field: 'SpatialNoiseStrength', headerName: 'Noise Str',  editable: true, width: 90,  type: 'numericColumn' },
+    { field: 'ScaleByDensityMin',    headerName: 'Scale Min',  editable: true, width: 85,  type: 'numericColumn' },
+    { field: 'ScaleByDensityMax',    headerName: 'Scale Max',  editable: true, width: 85,  type: 'numericColumn' },
+    { field: 'SpatialNoiseSeed',     headerName: 'Noise Seed', editable: true, width: 90,  type: 'numericColumn' },
+    { field: 'RandomSeed',           headerName: 'Rand Seed',  editable: true, width: 85,  type: 'numericColumn' },
+  ];
+
+  return [keyCol, ...headers.slice(1).map(h => ({ field: h, headerName: h, editable: true }))];
+}
+
+// ═══════════════════════════════════════════════════════
+// CSV  PARSE / SERIALIZE
+// ═══════════════════════════════════════════════════════
+function parseCSV(text) {
+  const res = Papa.parse(text.trim(), { header: false, skipEmptyLines: true });
+  if (res.data.length < 2) return { headers: [], rows: [] };
+  origHeaders = res.data[0];
+  tableType   = detectType(origHeaders);
+  const rows  = res.data.slice(1).map(row => {
+    const obj = { _key: row[0] };
+    origHeaders.slice(1).forEach((h, i) => { obj[h] = row[i + 1] ?? ''; });
+    return obj;
+  });
+  return { headers: origHeaders, rows };
+}
+
+function serializeCSV(rows) {
+  const data = [origHeaders];
+  rows.forEach(r => {
+    const row = [r._key];
+    origHeaders.slice(1).forEach(h => row.push(r[h] ?? ''));
+    data.push(row);
+  });
+  return Papa.unparse(data, { quotes: true, newline: '\r\n' });
+}
+
+// ═══════════════════════════════════════════════════════
+// GRID INIT
+// ═══════════════════════════════════════════════════════
+function initGrid(rows, defs) {
+  if (gridApi) { gridApi.destroy(); gridApi = null; }
+  clearSel();
+
+  gridApi = agGrid.createGrid(document.getElementById('grid'), {
+    columnDefs: defs,
+    rowData: rows,
+    animateRows: true,
+    suppressRowClickSelection: true,
+    defaultColDef: { resizable: true, sortable: true },
+    getRowId: p => p.data._key,
+
+    onCellClicked: handleCellClick,
+
+    onCellValueChanged(params) {
+      const field   = params.column.getColId();
+      const thisKey = cellKey(params.node.id, field);
+
+      // If this edited cell is part of a multi-cell selection,
+      // propagate the new value to all other selected cells in the same column.
+      if (selectedCells.has(thisKey) && selectedCells.size > 1) {
+        selectedCells.forEach(k => {
+          const [rowId, f] = k.split('||');
+          if (f === field && rowId !== params.node.id) {
+            gridApi.getRowNode(rowId)?.setDataValue(field, params.newValue);
+          }
+        });
+        document.getElementById('sel-val').value = params.newValue;
+      }
+      updateCharts();
+      // Re-apply highlights after AG Grid re-renders the changed cells
+      setTimeout(applySelHighlights, 0);
+    },
+  });
+
+  updateCharts();
+}
+
+// ═══════════════════════════════════════════════════════
+// CHARTS
+// ═══════════════════════════════════════════════════════
+const chartBase = {
+  responsive: true, maintainAspectRatio: true,
+  plugins: {
+    legend: { labels: { color: '#8aaad0', font: { size: 10 }, boxWidth: 10, padding: 6 } },
+    datalabels: { display: false }   // disabled by default; chart2 overrides per-dataset
+  },
+  scales: {
+    x: { ticks: { color: '#8aaad0', font: { size: 9 } }, grid: { color: '#1e3050' } },
+    y: { ticks: { color: '#a0c0e0', font: { size: 9 } }, grid: { color: '#1e3050' } }
+  }
+};
+
+function updateCharts() {
+  if (!gridApi || !tableType) return;
+  const rows = [];
+  gridApi.forEachNode(n => rows.push(n.data));
+  const labels = rows.map(r => r._key);
+
+  if (tableType === 'species') {
+    document.getElementById('chart1-label').textContent = 'Species Distribution';
+    document.getElementById('chart2-label').textContent = 'Age Class Distribution';
+
+    if (chart1) chart1.destroy();
+    chart1 = new Chart(document.getElementById('chart1'), {
+      type: 'bar',
+      data: { labels, datasets: [{ label: 'Stems / ha', data: rows.map(r => +r.StemsPerHectare || 0), backgroundColor: '#4dabf7' }] },
+      options: { ...chartBase, indexAxis: 'y', plugins: { ...chartBase.plugins, legend: { display: false } } }
+    });
+    if (chart2) chart2.destroy();
+    // Count MeshVariants per age class per species row
+    const vcounts = { Seedling: [], Sapling: [], Mature: [], Dead: [] };
+    rows.forEach(r => {
+      const variants = parseMeshVariants(r.MeshVariants || '');
+      const tally = { Seedling: 0, Sapling: 0, Mature: 0, Dead: 0 };
+      variants.forEach(v => { const ac = v['Age Class']; if (ac in tally) tally[ac]++; });
+      AGE_CLASSES.forEach(ac => vcounts[ac].push(tally[ac]));
+    });
+    // Normalize age class weights so every row's bar totals 5 — shows ratios, not raw values
+    const ageFields = { Seedling: 'SeedlingAgeWeight', Sapling: 'SaplingAgeWeight', Mature: 'MatureAgeWeight', Dead: 'DeadAgeWeight' };
+    const normData  = { Seedling: [], Sapling: [], Mature: [], Dead: [] };
+    rows.forEach(r => {
+      const raw   = {};
+      AGE_CLASSES.forEach(ac => raw[ac] = +r[ageFields[ac]] || 0);
+      const total = AGE_CLASSES.reduce((s, ac) => s + raw[ac], 0);
+      const scale = total > 0 ? 5 / total : 0;
+      AGE_CLASSES.forEach(ac => normData[ac].push(raw[ac] * scale));
+    });
+    const ageColors = { Seedling: '#2d7a53', Sapling: '#1a5c3c', Mature: '#0e3d27', Dead: '#4a2214' };
+    chart2 = new Chart(document.getElementById('chart2'), {
+      type: 'bar',
+      data: { labels, datasets: AGE_CLASSES.map(ac => ({
+        label: ac,
+        data: normData[ac],
+        backgroundColor: ageColors[ac],
+        _vcounts: vcounts[ac],   // carried through to the inline draw plugin below
+      })) },
+      // Inline plugin: draws variant counts directly onto the canvas after each render.
+      // More reliable than chartjs-plugin-datalabels for per-dataset overrides.
+      plugins: [{
+        id: 'variantCounts',
+        afterDatasetsDraw(chart) {
+          const { ctx } = chart;
+          chart.data.datasets.forEach((ds, di) => {
+            if (!ds._vcounts) return;
+            chart.getDatasetMeta(di).data.forEach((bar, ri) => {
+              const count = ds._vcounts[ri];
+              if (!count) return;
+              const segW = Math.abs(bar.x - bar.base);
+              if (segW < 14) return;   // segment too narrow to label
+              ctx.save();
+              ctx.fillStyle = '#fff';
+              ctx.font = 'bold 9px sans-serif';
+              ctx.textAlign = 'center';
+              ctx.textBaseline = 'middle';
+              ctx.fillText(String(count), (bar.x + bar.base) / 2, bar.y);
+              ctx.restore();
+            });
+          });
+        }
+      }],
+      options: { ...chartBase, indexAxis: 'y',
+        plugins: {
+          ...chartBase.plugins,
+          tooltip: {
+            callbacks: {
+              label: ctx => {
+                const ac = ctx.dataset.label;
+                const count = ctx.dataset._vcounts?.[ctx.dataIndex] ?? 0;
+                return ` ${ac}: ${count} variant${count !== 1 ? 's' : ''}`;
+              }
+            }
+          }
+        },
+        scales: {
+          x: { ...chartBase.scales.x, stacked: true, max: 5, ticks: { display: false } },
+          y: { ...chartBase.scales.y, stacked: true }
+        }
+      }
+    });
+  }
+
+  if (tableType === 'ecosystem') {
+    document.getElementById('chart1-label').textContent = 'Ecosystem Density';
+    document.getElementById('chart2-label').textContent = 'Spatial Noise Strength';
+    const bgColors = rows.map(r => colorHex(parseColor(r.EcosystemColor)));
+    if (chart1) chart1.destroy();
+    chart1 = new Chart(document.getElementById('chart1'), {
+      type: 'bar',
+      data: { labels, datasets: [{ label: 'Density', data: rows.map(r => +r.EcosystemDensity || 0), backgroundColor: bgColors }] },
+      options: { ...chartBase, indexAxis: 'y', plugins: { ...chartBase.plugins, legend: { display: false } } }
+    });
+    if (chart2) chart2.destroy();
+    chart2 = new Chart(document.getElementById('chart2'), {
+      type: 'bar',
+      data: { labels, datasets: [{ label: 'Noise Strength', data: rows.map(r => +r.SpatialNoiseStrength || 0), backgroundColor: '#a78bfa' }] },
+      options: { ...chartBase, indexAxis: 'y', plugins: { ...chartBase.plugins, legend: { display: false } } }
+    });
+  }
+}
+
+// ═══════════════════════════════════════════════════════
+// MESH VARIANTS  MODAL
+// ═══════════════════════════════════════════════════════
+function openModal(node) {
+  modalRowNode  = node;
+  modalVariants = parseMeshVariants(node.data.MeshVariants || '');
+  document.getElementById('modal-title').textContent = `Mesh Variants — ${node.data._key}`;
+  renderVariants();
+  document.getElementById('modal-bg').classList.add('on');
+}
+function closeModal() {
+  document.getElementById('modal-bg').classList.remove('on');
+  modalRowNode = null;
+}
+function renderVariants() {
+  const body = document.getElementById('modal-body');
+  body.innerHTML = '';
+  if (modalVariants.length === 0) {
+    body.innerHTML = '<p style="color:#6a8ab0;padding:12px">No variants yet. Click + Add Variant.</p>';
+    return;
+  }
+  modalVariants.forEach((v, idx) => {
+    const meshName = getMeshName(v['Mesh'] || '');
+    const div = document.createElement('div');
+    div.className = 'vrow';
+    div.innerHTML = `
+      <div class="vthumb" id="vt-${idx}" title="${esc(v['Mesh'] || '')}">${thumbHtml(meshName)}</div>
+      <div class="vfields">
+        <div class="vrow-num">Variant ${idx + 1}<button class="vdel" onclick="deleteVariant(${idx})">✕ Remove</button></div>
+        <div class="vfield full">
+          <label>Mesh Asset Path</label>
+          <input type="text" value="${esc(v['Mesh'] || '')}"
+            oninput="setV(${idx},'Mesh',this.value);updateThumb(${idx},this.value)">
+        </div>
+        <div class="vfield">
+          <label>Age Class</label>
+          <select onchange="setV(${idx},'Age Class',this.value)">
+            ${AGE_CLASSES.map(a => `<option${a === (v['Age Class'] || 'Mature') ? ' selected' : ''}>${a}</option>`).join('')}
+          </select>
+        </div>
+        <div class="vfield">
+          <label>Age Weight</label>
+          <input type="number" step="0.1" min="0" value="${v['AgeClassWeight'] || '1.0'}"
+            oninput="setV(${idx},'AgeClassWeight',this.value)">
+        </div>
+        <div class="vfield">
+          <label>Scale Min</label>
+          <input type="number" step="0.1" min="0" value="${v['_scaleX'] || '0.8'}"
+            oninput="setV(${idx},'_scaleX',this.value)">
+        </div>
+        <div class="vfield">
+          <label>Scale Max</label>
+          <input type="number" step="0.1" min="0" value="${v['_scaleY'] || '1.2'}"
+            oninput="setV(${idx},'_scaleY',this.value)">
+        </div>
+        <div class="vfield">
+          <label>Align to Surface</label>
+          <input type="number" step="0.1" min="0" max="1" value="${v['AlignToSurface'] || '0.5'}"
+            oninput="setV(${idx},'AlignToSurface',this.value)">
+        </div>
+        <div class="vfield">
+          <label>Z Offset</label>
+          <input type="number" step="1" value="${v['ZPositionOffset'] || '0'}"
+            oninput="setV(${idx},'ZPositionOffset',this.value)">
+        </div>
+      </div>`;
+    body.appendChild(div);
+    tryLoadThumb(meshName).then(url => {
+      if (url) {
+        const el = document.getElementById(`vt-${idx}`);
+        if (el) el.innerHTML = `<img src="${url}" alt="${meshName}">`;
+      }
+    });
+  });
+}
+const setV = (idx, key, val) => { if (modalVariants[idx]) modalVariants[idx][key] = val; };
+function updateThumb(idx, path) {
+  tryLoadThumb(getMeshName(path)).then(url => {
+    const el = document.getElementById(`vt-${idx}`);
+    if (!el) return;
+    el.innerHTML = url ? `<img src="${url}" alt="">` : getMeshName(path) || '(none)';
+  });
+}
+function deleteVariant(idx) { modalVariants.splice(idx, 1); renderVariants(); }
+function addVariant() {
+  modalVariants.push({ 'Mesh': '', 'Age Class': 'Mature', 'AgeClassWeight': '1.000000',
+    '_scaleX': '0.800000', '_scaleY': '1.200000', 'AlignToSurface': '0.500000', 'ZPositionOffset': '0.000000' });
+  renderVariants();
+  document.getElementById('modal-body').scrollTop = 9999;
+}
+function saveVariants() {
+  if (!modalRowNode) return;
+  modalRowNode.setDataValue('MeshVariants', serializeMeshVariants(modalVariants));
+  closeModal();
+  setStatus('Variants saved');
+}
+
+// ═══════════════════════════════════════════════════════
+// THUMBNAILS
+// ═══════════════════════════════════════════════════════
+function getMeshName(path) { return (path.split('/').pop() || '').split('.')[0]; }
+function thumbHtml(name) {
+  return thumbCache[name]
+    ? `<img src="${thumbCache[name]}" alt="${name}">`
+    : `<span style="word-break:break-all">${name || '(none)'}</span>`;
+}
+async function tryLoadThumb(meshName) {
+  if (!meshName || !thumbDir) return null;
+  if (thumbCache[meshName]) return thumbCache[meshName];
+  for (const ext of ['png', 'jpg', 'jpeg']) {
+    try {
+      const fh  = await thumbDir.getFileHandle(`${meshName}.${ext}`);
+      const url = URL.createObjectURL(await fh.getFile());
+      thumbCache[meshName] = url;
+      return url;
+    } catch {}
+  }
+  return null;
+}
+async function openThumbs() {
+  try {
+    thumbDir   = await window.showDirectoryPicker({ mode: 'read' });
+    thumbCache = {};
+    setStatus('Thumbnail folder: ' + thumbDir.name);
+  } catch (e) { if (e.name !== 'AbortError') setStatus('Error: ' + e.message); }
+}
+
+// ═══════════════════════════════════════════════════════
+// FILE  I/O
+// ═══════════════════════════════════════════════════════
+async function openFile() {
+  try {
+    [fileHandle] = await window.showOpenFilePicker({
+      types: [{ description: 'CSV files', accept: { 'text/csv': ['.csv'] } }]
+    });
+    const text = await (await fileHandle.getFile()).text();
+    const { headers, rows } = parseCSV(text);
+    document.getElementById('table-badge').textContent =
+      tableType === 'species' ? 'Species Table' : tableType === 'ecosystem' ? 'Ecosystem Table' : 'Data Table';
+    document.getElementById('file-name').textContent = fileHandle.name;
+    initGrid(rows, buildColDefs(tableType, headers));
+    setStatus(`${rows.length} rows loaded`);
+  } catch (e) { if (e.name !== 'AbortError') setStatus('Open error: ' + e.message); }
+}
+async function saveFile() {
+  if (!gridApi) { setStatus('Nothing to save'); return; }
+  const rows = [];
+  gridApi.forEachNode(n => rows.push(n.data));
+  try {
+    const fh = fileHandle || await window.showSaveFilePicker({
+      suggestedName: 'output.csv',
+      types: [{ description: 'CSV', accept: { 'text/csv': ['.csv'] } }]
+    });
+    const w = await fh.createWritable();
+    await w.write(serializeCSV(rows));
+    await w.close();
+    fileHandle = fh;
+    setStatus('Saved ✓');
+  } catch (e) { if (e.name !== 'AbortError') setStatus('Save error: ' + e.message); }
+}
+
+// ═══════════════════════════════════════════════════════
+// ADD ROW
+// ═══════════════════════════════════════════════════════
+function addRow() {
+  if (!gridApi) return;
+  const base = { _key: 'NewRow_' + Date.now() };
+  origHeaders.slice(1).forEach(h => { base[h] = ''; });
+  if (tableType === 'species') Object.assign(base, {
+    SpeciesWeight: '1.000000', StemsPerHectare: '100.000000',
+    SlopeRange: '(X=0.000000,Y=1.000000)', AspectRange: '(X=0.000000,Y=1.000000)',
+    WetnessRange: '(X=0.000000,Y=1.000000)', MicroTopoRange: '(X=0.000000,Y=1.000000)',
+    SeedlingAgeWeight: '1.000000', SaplingAgeWeight: '1.000000',
+    MatureAgeWeight: '1.000000', DeadAgeWeight: '0.200000',
+    Collision: 'False', MeshVariants: '()'
+  });
+  if (tableType === 'ecosystem') Object.assign(base, {
+    EcosystemVisible: 'True', EcosystemDensity: '1.000000',
+    EcosystemColor: '(R=0.500000,G=0.500000,B=0.500000,A=1.000000)',
+    SpeciesList: '', EdgeBlendDistance: '15.000000',
+    SpatialNoiseSize: '1000.000000', SpatialNoiseStrength: '2.000000',
+    ScaleByDensityMin: '0.800000', ScaleByDensityMax: '1.200000',
+    SpatialNoiseSeed: '0', RandomSeed: '0'
+  });
+  gridApi.applyTransaction({ add: [base] });
+  setStatus('Row added — click the Row Name cell to rename it');
+}
+
+// ═══════════════════════════════════════════════════════
+// UTILS
+// ═══════════════════════════════════════════════════════
+const esc = s => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+const setStatus = msg => { document.getElementById('status-msg').textContent = msg; };
+
+document.getElementById('modal-bg').addEventListener('click', e => {
+  if (e.target === document.getElementById('modal-bg')) closeModal();
+});
+</script>
+</body>
+</html>
