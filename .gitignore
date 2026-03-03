@@ -6,3 +6,8 @@ desktop.ini
 # Editor
 *.swp
 *~
+
+# Working/comparison files
+*-mod.csv
+*-orig.csv
+Backup/

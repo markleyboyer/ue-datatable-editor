@@ -1,10 +1,10 @@
 # UE DataTable Editor
 
-A standalone single-file web app for editing Unreal Engine DataTable CSV exports outside the engine, then re-importing them with exact format fidelity.
+A standalone single-file web app for editing the **Aziel Arts Ecological Biome** DataTable CSV exports outside Unreal Engine, then re-importing them with exact format fidelity.
 
 ## Purpose
 
-Unreal Engine can export DataTables as CSV files. This tool lets you edit those CSVs in a spreadsheet-like interface with bulk multi-cell editing, visual charts, and a structured modal editor for complex nested fields — then save them back in a format UE can re-import without modification.
+The Aziel Arts Ecological Biome system uses Unreal Engine DataTables to define species placement rules and ecosystem compositions. This tool lets you edit those CSVs in a spreadsheet-like interface with bulk multi-cell editing, visual charts, and a grid-based modal editor for the complex nested MeshVariants field — then save them back in a format UE can re-import without modification.
 
 ## Files
 
@@ -44,13 +44,19 @@ When one or more cells are selected in the same column, a bar appears above the 
 - **Range fields** (Slope, Aspect, Wetness, MicroTopo): the bar shows separate **Min** and **Max** number inputs instead of a single text field; values are serialized as UE Vector2D format `(X=0.000000,Y=1.000000)`
 
 ### MeshVariants Column
-Clicking a cell in the **Mesh Variants** column opens a modal editor with one structured row per mesh variant. Each variant exposes:
-- Mesh asset path
-- Age Class (Seedling / Sapling / Mature / Dead)
-- Age Class Weight
-- Scale Min / Scale Max
-- Align to Surface
-- Z Position Offset
+Clicking a cell in the **Mesh Variants** column opens a modal grid editor. Each variant is a row in the grid with the same multi-cell selection and bulk-edit behavior as the main table. Columns:
+
+| Column | Description |
+|--------|-------------|
+| Mesh Asset Path | Full UE asset path to the static mesh |
+| Age Class | Seedling / Sapling / Mature / Dead |
+| Age Wt | AgeClassWeight |
+| Scale Min / Max | ScaleRange X and Y |
+| Align | AlignToSurface (0–1) |
+| Z Offset | ZPositionOffset |
+| ✕ | Remove this variant row |
+
+Click **+ Add Variant** to append a new row. Click **✓ Save Variants** to write back to the main table.
 
 ---
 
