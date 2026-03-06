@@ -77,6 +77,10 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; b
 #modal-sel-val:focus { outline: none; border-color: #5a9ae0; box-shadow: 0 0 0 2px rgba(90,154,224,0.2); }
 #modal-body { flex: 1; overflow: hidden; }
 #modal-grid { width: 100%; height: 100%; }
+#thumb-popup { display:none; position:fixed; z-index:9999; pointer-events:none;
+  background:#0e1828; border:1px solid #3a5a90; border-radius:6px;
+  padding:6px; box-shadow:0 4px 20px rgba(0,0,0,0.7); }
+#thumb-popup img { display:block; width:400px; height:400px; object-fit:contain; }
 #modal-foot { padding: 8px 16px; border-top: 1px solid #0f3460; display: flex; justify-content: space-between; align-items: center; flex-shrink: 0; }
 
 /* ── AG Grid theme tweaks ── */
@@ -110,6 +114,9 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; b
   <!-- Single-value input (most fields) -->
   <input id="sel-val" type="text" placeholder="new value" autocomplete="off">
   <button id="sel-apply" class="btn purple" onclick="applySelEdit()">Apply ↵</button>
+  <span style="color:#3a5a80;padding:0 4px;">|</span>
+  <input id="sel-factor" type="number" placeholder="× factor" step="any" title="Multiply selected values by this factor" style="width:90px;">
+  <button class="btn" onclick="applyFactor()" title="Multiply each selected cell's value by the factor">× Scale</button>
   <!-- Range input (SlopeRange, AspectRange, WetnessRange, MicroTopoRange) -->
   <div id="sel-range">
     <label>Min</label><input id="sel-min" type="number" step="0.01" placeholder="0.00">
@@ -148,6 +155,9 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; b
       <span id="modal-sel-info"></span>
       <input id="modal-sel-val" type="text" placeholder="new value" autocomplete="off">
       <button id="modal-sel-apply" class="btn purple" onclick="applyModalSelEdit()">Apply ↵</button>
+      <span style="color:#3a5a80;padding:0 4px;">|</span>
+      <input id="modal-sel-factor" type="number" placeholder="× factor" step="any" title="Multiply selected values by this factor" style="width:90px;background:#06101e;color:#e0e0e0;border:1px solid #3a6aaa;padding:4px 9px;border-radius:3px;font-size:12px;">
+      <button class="btn" onclick="applyModalFactor()">× Scale</button>
       <span style="color:#3a5a80;font-size:11px;white-space:nowrap">Click · Shift+click · Ctrl+click</span>
     </div>
     <div id="modal-body">
@@ -186,6 +196,14 @@ let chart1 = null, chart2 = null;
 
 const AGE_CLASSES  = ['Seedling', 'Sapling', 'Mature', 'Dead'];
 const RANGE_FIELDS = new Set(['SlopeRange', 'AspectRange', 'WetnessRange', 'MicroTopoRange']);
+// Fields that always serialize as 6-decimal floats in UE
+const FLOAT_FIELDS = new Set([
+  'StemsPerHectare',
+  'SeedlingAgeWeight', 'SaplingAgeWeight', 'MatureAgeWeight', 'DeadAgeWeight',
+  'EcosystemDensity', 'EdgeBlendDistance', 'SpatialNoiseSize', 'SpatialNoiseStrength',
+  'ScaleByDensityMin', 'ScaleByDensityMax',
+  'AgeClassWeight', 'AlignToSurface', 'ZPositionOffset', '_scaleX', '_scaleY',
+]);
 
 // ═══════════════════════════════════════════════════════
 // UE FORMAT HELPERS
@@ -209,22 +227,20 @@ function colorHex(c) {
 
 // ═══════════════════════════════════════════════════════
 // FLOAT FORMATTING
-// If the user types a whole number into a field whose existing
-// values carry 6 decimal places, auto-append ".000000".
+// If the user types a whole number into a float field,
+// auto-expand to 6 decimal places.
 // ═══════════════════════════════════════════════════════
 function maybeFormatFloat(val, field, selCells, api) {
   const trimmed = val.trim();
-  // Only act if it's a bare integer (no dot)
   if (!/^-?\d+$/.test(trimmed)) return trimmed;
-
-  // Peek at an existing cell to see if the field stores floats
+  // Known float field — always expand
+  if (FLOAT_FIELDS.has(field)) return parseFloat(trimmed).toFixed(6);
+  // Generic fallback: peek at any existing cell for this field
   for (const key of selCells) {
     const [rowId, f] = key.split('||');
     if (f !== field) continue;
-    const node = api.getRowNode(rowId);
-    const existing = String(node?.data[field] ?? '');
-    if (/^\d+\.\d+$/.test(existing)) return parseFloat(trimmed).toFixed(6);
-    break;
+    const existing = String(api.getRowNode(rowId)?.data[field] ?? '');
+    if (/\.\d/.test(existing)) return parseFloat(trimmed).toFixed(6);
   }
   return trimmed;
 }
@@ -478,6 +494,37 @@ function applySelEdit() {
   setStatus(`"${val}" → ${count} cell${count !== 1 ? 's' : ''} in ${field}`);
 }
 
+function applyScaleFactor(selCells, api, factorInputId, highlightFn, chartFn) {
+  const factor = parseFloat(document.getElementById(factorInputId).value);
+  if (isNaN(factor)) { setStatus('Enter a numeric factor first'); return; }
+
+  const fields = new Set([...selCells].map(k => k.split('||')[1]));
+  if (fields.size !== 1) return;
+  const field = [...fields][0];
+  if (RANGE_FIELDS.has(field)) { setStatus('Scale factor not supported for range fields'); return; }
+
+  const isFloat = FLOAT_FIELDS.has(field);
+  let count = 0;
+  selCells.forEach(k => {
+    const [rowId] = k.split('||');
+    const node = api.getRowNode(rowId);
+    if (!node) return;
+    const cur = parseFloat(node.data[field]);
+    if (isNaN(cur)) return;
+    const result = cur * factor;
+    const newVal = isFloat ? result.toFixed(6) : String(result);
+    node.setDataValue(field, newVal);
+    count++;
+  });
+
+  if (chartFn) chartFn();
+  setTimeout(highlightFn, 0);
+  setStatus(`×${factor} → ${count} cell${count !== 1 ? 's' : ''} in ${field}`);
+}
+
+function applyFactor()      { applyScaleFactor(selectedCells,      gridApi,      'sel-factor',       applySelHighlights,      updateCharts); }
+function applyModalFactor() { applyScaleFactor(modalSelectedCells, modalGridApi, 'modal-sel-factor', applyModalSelHighlights, null); }
+
 // Keyboard shortcuts on all selection bar inputs
 document.addEventListener('DOMContentLoaded', () => {
   ['sel-val', 'sel-min', 'sel-max'].forEach(id => {
@@ -486,8 +533,16 @@ document.addEventListener('DOMContentLoaded', () => {
       if (e.key === 'Escape') { e.preventDefault(); clearSel(); }
     });
   });
+  document.getElementById('sel-factor').addEventListener('keydown', e => {
+    if (e.key === 'Enter')  { e.preventDefault(); applyFactor(); }
+    if (e.key === 'Escape') { e.preventDefault(); clearSel(); }
+  });
   document.getElementById('modal-sel-val').addEventListener('keydown', e => {
     if (e.key === 'Enter')  { e.preventDefault(); applyModalSelEdit(); }
+    if (e.key === 'Escape') { e.preventDefault(); clearModalSel(); }
+  });
+  document.getElementById('modal-sel-factor').addEventListener('keydown', e => {
+    if (e.key === 'Enter')  { e.preventDefault(); applyModalFactor(); }
     if (e.key === 'Escape') { e.preventDefault(); clearModalSel(); }
   });
 });
@@ -541,7 +596,6 @@ function buildColDefs(type, headers) {
 
   if (type === 'species') return [
     keyCol,
-    { field: 'SpeciesWeight',      headerName: 'Weight',    editable: true, width: 80,  type: 'numericColumn' },
     { field: 'StemsPerHectare',    headerName: 'Stems/ha',  editable: true, width: 90,  type: 'numericColumn' },
     { field: 'SlopeRange',         headerName: 'Slope',     editable: true, width: 110, cellRenderer: rangeRenderer },
     { field: 'AspectRange',        headerName: 'Aspect',    editable: true, width: 110, cellRenderer: rangeRenderer },
@@ -625,22 +679,29 @@ function initGrid(rows, defs) {
     onCellClicked: handleCellClick,
 
     onCellValueChanged(params) {
-      const field   = params.column.getColId();
-      const thisKey = cellKey(params.node.id, field);
+      const field = params.column.getColId();
+      let newVal  = params.newValue;
+
+      // Auto-format bare integers in known float fields (direct-edit path)
+      if (FLOAT_FIELDS.has(field) && /^-?\d+$/.test(String(newVal ?? '').trim())) {
+        newVal = parseFloat(newVal).toFixed(6);
+        params.node.data[field] = newVal;
+        params.api.refreshCells({ rowNodes: [params.node], columns: [field], force: true });
+      }
 
       // If this edited cell is part of a multi-cell selection,
       // propagate the new value to all other selected cells in the same column.
+      const thisKey = cellKey(params.node.id, field);
       if (selectedCells.has(thisKey) && selectedCells.size > 1) {
         selectedCells.forEach(k => {
           const [rowId, f] = k.split('||');
           if (f === field && rowId !== params.node.id) {
-            gridApi.getRowNode(rowId)?.setDataValue(field, params.newValue);
+            gridApi.getRowNode(rowId)?.setDataValue(field, newVal);
           }
         });
-        document.getElementById('sel-val').value = params.newValue;
+        document.getElementById('sel-val').value = newVal;
       }
       updateCharts();
-      // Re-apply highlights after AG Grid re-renders the changed cells
       setTimeout(applySelHighlights, 0);
     },
   });
@@ -899,6 +960,39 @@ function openModal(node) {
 
   modalGridApi = agGrid.createGrid(document.getElementById('modal-grid'), {
     columnDefs: [
+      { colId: '_thumb', headerName: '', width: 56, editable: false,
+        sortable: false, resizable: false, suppressMenu: true,
+        cellRenderer(params) {
+          const wrap = document.createElement('div');
+          wrap.style.cssText = 'display:flex;align-items:center;justify-content:center;height:100%;';
+          const url = thumbCache[getMeshName(params.data?.Mesh || '')];
+          if (url) {
+            const img = document.createElement('img');
+            img.style.cssText = 'max-height:44px;max-width:50px;object-fit:contain;cursor:zoom-in;';
+            img.src = url;
+            const popup = document.getElementById('thumb-popup');
+            img.addEventListener('mouseenter', e => {
+              popup.innerHTML = `<img src="${url}">`;
+              popup.style.display = 'block';
+            });
+            img.addEventListener('mousemove', e => {
+              const pad = 14;
+              const pw = 452, ph = 452;
+              const left = e.clientX + pad + pw > window.innerWidth
+                ? e.clientX - pw - pad : e.clientX + pad;
+              const top  = e.clientY + pad + ph > window.innerHeight
+                ? e.clientY - ph - pad : e.clientY + pad;
+              popup.style.left = left + 'px';
+              popup.style.top  = top  + 'px';
+            });
+            img.addEventListener('mouseleave', () => {
+              popup.style.display = 'none';
+            });
+            wrap.appendChild(img);
+          }
+          return wrap;
+        },
+      },
       { field: 'Mesh',            headerName: 'Mesh Asset Path', editable: true, flex: 1, minWidth: 180 },
       { field: 'Age Class',       headerName: 'Age Class',   editable: true, width: 110,
         cellEditor: 'agSelectCellEditor', cellEditorParams: { values: AGE_CLASSES } },
@@ -910,11 +1004,21 @@ function openModal(node) {
       variantDelCol,
     ],
     rowData: parseMeshVariants(node.data.MeshVariants || ''),
+    rowHeight: 52,
     animateRows: true,
     suppressRowClickSelection: true,
     defaultColDef: { resizable: true, sortable: true },
     onCellClicked: handleModalCellClick,
-    onCellValueChanged() { setTimeout(applyModalSelHighlights, 0); },
+    onCellValueChanged(params) {
+      const field = params.column.getColId();
+      let newVal  = params.newValue;
+      if (FLOAT_FIELDS.has(field) && /^-?\d+$/.test(String(newVal ?? '').trim())) {
+        newVal = parseFloat(newVal).toFixed(6);
+        params.node.data[field] = newVal;
+        params.api.refreshCells({ rowNodes: [params.node], columns: [field], force: true });
+      }
+      setTimeout(applyModalSelHighlights, 0);
+    },
   });
 }
 
@@ -947,24 +1051,23 @@ function saveVariants() {
 // THUMBNAILS  (directory picker — for future use)
 // ═══════════════════════════════════════════════════════
 function getMeshName(path) { return (path.split('/').pop() || '').split('.')[0]; }
-async function tryLoadThumb(meshName) {
-  if (!meshName || !thumbDir) return null;
-  if (thumbCache[meshName]) return thumbCache[meshName];
-  for (const ext of ['png', 'jpg', 'jpeg']) {
-    try {
-      const fh  = await thumbDir.getFileHandle(`${meshName}.${ext}`);
-      const url = URL.createObjectURL(await fh.getFile());
-      thumbCache[meshName] = url;
-      return url;
-    } catch {}
-  }
-  return null;
-}
 async function openThumbs() {
   try {
     thumbDir   = await window.showDirectoryPicker({ mode: 'read' });
     thumbCache = {};
-    setStatus('Thumbnail folder: ' + thumbDir.name);
+    setStatus('Thumbnails: loading…');
+    let n = 0;
+    for await (const [name, handle] of thumbDir.entries()) {
+      if (handle.kind !== 'file') continue;
+      const lower = name.toLowerCase();
+      if (!lower.endsWith('.png') && !lower.endsWith('.jpg') && !lower.endsWith('.jpeg')) continue;
+      try {
+        thumbCache[name.replace(/\.[^.]+$/, '')] = URL.createObjectURL(await handle.getFile());
+        n++;
+      } catch {}
+    }
+    setStatus(`Thumbnails: ${n} loaded`);
+    if (modalGridApi) modalGridApi.refreshCells({ force: true });
   } catch (e) { if (e.name !== 'AbortError') setStatus('Error: ' + e.message); }
 }
 
@@ -1025,7 +1128,7 @@ function addRow() {
   const base = { _key: 'NewRow_' + Date.now() };
   origHeaders.slice(1).forEach(h => { base[h] = ''; });
   if (tableType === 'species') Object.assign(base, {
-    SpeciesWeight: '1.000000', StemsPerHectare: '100.000000',
+    StemsPerHectare: '100.000000',
     SlopeRange: '(X=0.000000,Y=1.000000)', AspectRange: '(X=0.000000,Y=1.000000)',
     WetnessRange: '(X=0.000000,Y=1.000000)', MicroTopoRange: '(X=0.000000,Y=1.000000)',
     SeedlingAgeWeight: '1.000000', SaplingAgeWeight: '1.000000',
@@ -1054,5 +1157,6 @@ document.getElementById('modal-bg').addEventListener('click', e => {
   if (e.target === document.getElementById('modal-bg')) closeModal();
 });
 </script>
+<div id="thumb-popup"></div>
 </body>
 </html>
