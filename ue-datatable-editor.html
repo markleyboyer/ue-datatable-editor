@@ -184,6 +184,7 @@ let origHeaders  = [];
 // Cell selection
 const selectedCells = new Set();  // "rowId||field"
 let anchorCell = null;            // { rowId, field } — pivot for Shift-click
+let _suppressBroadcast = false;   // true during bulk updates (scale factor, etc.)
 
 // Modal
 let modalRowNode = null;
@@ -504,7 +505,8 @@ function applyScaleFactor(selCells, api, factorInputId, highlightFn, chartFn) {
   if (RANGE_FIELDS.has(field)) { setStatus('Scale factor not supported for range fields'); return; }
 
   const isFloat = FLOAT_FIELDS.has(field);
-  let count = 0;
+  // Compute all new values first using current data, before any setDataValue calls
+  const updates = [];
   selCells.forEach(k => {
     const [rowId] = k.split('||');
     const node = api.getRowNode(rowId);
@@ -512,10 +514,13 @@ function applyScaleFactor(selCells, api, factorInputId, highlightFn, chartFn) {
     const cur = parseFloat(node.data[field]);
     if (isNaN(cur)) return;
     const result = cur * factor;
-    const newVal = isFloat ? result.toFixed(6) : String(result);
-    node.setDataValue(field, newVal);
-    count++;
+    updates.push({ node, newVal: isFloat ? result.toFixed(6) : String(result) });
   });
+  // Directly mutate node data and refresh cells instead of using setDataValue,
+  // so onCellValueChanged's broadcast-to-selection logic never fires.
+  updates.forEach(({ node, newVal }) => { node.data[field] = newVal; });
+  api.refreshCells({ rowNodes: updates.map(u => u.node), columns: [field], force: true });
+  const count = updates.length;
 
   if (chartFn) chartFn();
   setTimeout(highlightFn, 0);
@@ -692,7 +697,7 @@ function initGrid(rows, defs) {
       // If this edited cell is part of a multi-cell selection,
       // propagate the new value to all other selected cells in the same column.
       const thisKey = cellKey(params.node.id, field);
-      if (selectedCells.has(thisKey) && selectedCells.size > 1) {
+      if (!_suppressBroadcast && selectedCells.has(thisKey) && selectedCells.size > 1) {
         selectedCells.forEach(k => {
           const [rowId, f] = k.split('||');
           if (f === field && rowId !== params.node.id) {
