@@ -2,20 +2,25 @@
 
 A standalone single-file web app for editing the **Aziel Arts Ecological Biome** DataTable CSV exports outside Unreal Engine, then re-importing them with exact format fidelity.
 
+**▶ Live: https://markleyboyer.github.io/ue-datatable-editor/**
+
+No install, no build step. Open the link in any modern browser, click **📂 Open CSV**, and edit local files on your machine.
+
 ## Purpose
 
-The Aziel Arts Ecological Biome system uses Unreal Engine DataTables to define species placement rules and ecosystem compositions. This tool lets you edit those CSVs in a spreadsheet-like interface with bulk multi-cell editing, scale-factor operations, visual charts, and a grid-based modal editor for the complex nested MeshVariants field — then save them back in a format UE can re-import without modification.
+The Aziel Arts Ecological Biome system uses Unreal Engine DataTables to define species placement rules and ecosystem compositions. This tool lets you edit those CSVs in a spreadsheet-like interface with bulk multi-cell editing, scale-factor operations, live charts, a grid-based modal editor for the nested MeshVariants field, and a live spatial preview of dispersion patterns — then save them back in a format UE can re-import without modification.
 
 ## Files
 
 | File | Description |
 |------|-------------|
-| `ue-datatable-editor.html` | The editor — open this in Chrome or Edge |
-| `DT_NewReal01.csv` | Species DataTable (mesh placement rules per species) |
-| `DT_PlatteEcosystems.csv` | Ecosystem DataTable (biome compositions and spatial parameters) |
+| `ue-datatable-editor.html` | The editor (the actual app) |
+| `index.html` | Tiny redirect → `ue-datatable-editor.html` for the GitHub Pages root |
+| `DT_PlatteEcosystems.csv` | Example Ecosystem DataTable for trying out the editor |
 | `chop_thumbnails.py` | Utility: chop a UE content-browser screenshot into named PNGs |
 | `chop_all_species.py` | Utility: batch-run chop_thumbnails for all species folders |
-| `SpeciesScreenShots/Thumbnails/` | Flat folder of all species mesh PNGs (load this in the editor) |
+
+The editor opens any UE DataTable CSV from your local disk — you don't need any of the example files in the repo to use it.
 
 See [HOW-TO-USE.md](HOW-TO-USE.md) for step-by-step instructions.
 
@@ -23,10 +28,21 @@ See [HOW-TO-USE.md](HOW-TO-USE.md) for step-by-step instructions.
 
 ## How to Use
 
-1. Open `ue-datatable-editor.html` in **Chrome or Edge** (requires the File System Access API — Firefox is not supported)
-2. Click **Open CSV** and select one of the DataTable CSV files
-3. Edit data in the grid
-4. Click **Save CSV** — a Save As dialog will appear; choose a file name and location
+1. Open the [hosted editor](https://markleyboyer.github.io/ue-datatable-editor/) — or `ue-datatable-editor.html` locally in any browser
+2. Click **📂 Open CSV** and pick a DataTable CSV from your disk
+3. Edit values in the grid
+4. Click **💾 Save CSV** — saves back over the original file (Chrome/Edge) or to your Downloads folder (other browsers)
+
+### Browser support
+
+The editor works everywhere, but the file-handling experience differs:
+
+| Browser | Open CSV | Save CSV |
+|---------|----------|----------|
+| Chrome / Edge / Opera (desktop) | Native picker (File System Access API) | **Saves back to the original file in place** |
+| Firefox / Safari / mobile | Standard file input | Downloads to your Downloads folder |
+
+GitHub Pages serves over HTTPS, which is what the in-place save path needs — running the page from `file://` may disable that path in some browsers (notably Brave). Use the hosted URL or serve the folder over `http://localhost` if you hit that.
 
 ### Thumbnail Support
 
@@ -88,6 +104,7 @@ Charts update live as you edit data.
 |-------|---------|
 | **Species Distribution** | Horizontal bar chart of Stems per Hectare per species |
 | **Age Class Distribution** | Stacked horizontal bar chart of age class weights (Seedling / Sapling / Mature / Dead). White bold labels inside each segment show the number of mesh variants assigned to that age class. |
+| **Dispersion Pattern** | Live spatial preview of the species' point distribution — see below |
 
 ### Ecosystem Table
 | Chart | Content |
@@ -97,13 +114,48 @@ Charts update live as you edit data.
 
 ---
 
+## Dispersion Pattern Visualizer
+
+When a species table is loaded and a row is selected, the **Dispersion Pattern** panel appears in the sidebar with a live canvas preview of how that species will be spatially distributed in Unreal Engine.
+
+### What it reads
+
+| Field | Effect on the preview |
+|-------|----------------------|
+| `DispersionType` | `Random` / `Poisson` → uniform-random; `Clumping` → Thomas process (cluster centers + Gaussian offspring); `Uniform` → jittered hex-ish grid |
+| `TargetRIndex` | Clark-Evans nearest-neighbor index target. R<1 = clumped, R=1 = random, R≈2.149 = perfect hex packing |
+| `DispersionScale` | Cluster radius (in **meters**) for Clumping; jitter magnitude for Uniform |
+| `DispersionWarpStrength` | Smooth sinusoidal displacement applied to the whole point set |
+| `DispersionSeed` | Seeds a deterministic RNG, so the same inputs always produce the same pattern |
+| `StemsPerHectare` | Multiplied by the visible area (from the scale slider) to give the actual point count rendered |
+
+### Real-world scale
+
+A slider above the canvas sets the edge length of the visible area, from **5 m to 5 km** (default 100 m). Everything in the preview is in real meters:
+
+- The total point count = `StemsPerHectare × area_in_hectares` — so the same species draws ~50 dots at 50 m, ~200 at 100 m, and densifies further as you zoom out
+- Cluster sigma is in real meters, so a 4 m clump genuinely covers 4% of a 100 m grid and 0.4% of a 1 km grid
+- Each dot is drawn at the size of a tree canopy (~1.5 m radius), clamped to a legible pixel range
+- A **scale bar** in the bottom-left and a **house icon** (10 m × 8 m footprint) in the bottom-right give human-scale references that update with the slider
+- For very large grids the rendered count is capped at 3,000 points per pattern, with a `(of 20,000)` annotation in the info readout
+
+### Multi-row overlay
+
+Selecting cells across multiple rows (Ctrl+click or Shift+click) draws each row's pattern as a colored layer on the same canvas, so you can compare distributions side-by-side. Opacity steps down as more rows are added (1 row = full opacity, 7+ rows ≈ 42%). The legend below the canvas shows each row's name, dispersion type, and stems/ha in its layer color.
+
+### Computed Clark-Evans R
+
+For a single selected row, the info readout shows both `R_target` (what you set) and `R_actual` (the Clark-Evans index of the actually-rendered point set), which is a useful sanity check that the generator is matching your intent.
+
+---
+
 ## Supported Table Types
 
 The editor auto-detects the table type from column headers on load:
 
 | Type | Detected by | Key columns |
 |------|-------------|-------------|
-| **Species** | `MeshVariants` column present | StemsPerHectare, SlopeRange, AspectRange, WetnessRange, MicroTopoRange, age weights, MeshVariants |
+| **Species** | `MeshVariants` column present | StemsPerHectare, DispersionType, TargetRIndex, DispersionScale, DispersionWarpStrength, DispersionSeed, SlopeRange, AspectRange, WetnessRange, MicroTopoRange, age weights, MeshVariants |
 | **Ecosystem** | `SpeciesList` column present | EcosystemVisible, EcosystemDensity, EcosystemColor, SpeciesList, noise/seed params |
 | **Generic** | fallback | All columns editable as plain text |
 
@@ -174,9 +226,11 @@ The scale operation pre-computes all new values from current row data before app
 Papa Parse is used only for parsing. Serialization is done manually to match UE's exact quoting format: `origHeaders.join(',')` for the header line (no quotes); first column unquoted then `'"' + value + '"'` for all remaining columns.
 
 ### Browser Requirements
-Requires Chrome 86+ or Edge 86+ for the File System Access API (`showOpenFilePicker`, `showSaveFilePicker`, `showDirectoryPicker`). Falls back to a standard browser download if the save API is unavailable.
+The editor uses the File System Access API (`showOpenFilePicker`, `showSaveFilePicker`, `showDirectoryPicker`) when available — that gives the in-place save experience in Chrome 86+ / Edge 86+ / Opera. If the API is missing (Firefox, Safari, mobile browsers, or sandboxed iframes such as the GitHub Pages preview), it falls back to:
+- A hidden `<input type="file">` for opening
+- A blob download for saving
 
-Other Chromium browsers (Brave, Arc, Vivaldi, Opera) ship the same API but may block it on `file://` origins as part of their privacy hardening — Brave is a notable example. Workarounds: open the page in Chrome/Edge instead, or serve the folder over `http://localhost` (e.g. `python -m http.server 8000`).
+Other Chromium browsers (Brave, Arc, Vivaldi) ship the same API but may block it on `file://` origins as part of their privacy hardening — Brave is a notable example. Workarounds: use the [hosted Pages URL](https://markleyboyer.github.io/ue-datatable-editor/), open the page in Chrome/Edge directly, or serve the folder over `http://localhost` (e.g. `python -m http.server 8000`).
 
 ---
 
