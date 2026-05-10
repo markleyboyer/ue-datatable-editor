@@ -145,7 +145,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; b
       <div class="chart-wrap"><canvas id="chart2" height="180"></canvas></div>
     </div>
     <div class="sidebar-section" id="dispersion-section" style="display:none;">
-      <h4>Dispersion Pattern</h4>
+      <h4 id="dispersion-section-title">Dispersion Pattern</h4>
       <div class="chart-wrap">
         <div id="dispersion-scale-row" style="display:flex;align-items:center;gap:8px;padding:0 0 6px;">
           <label style="font-size:10px;color:#7a9abf;text-transform:uppercase;letter-spacing:0.5px;">Scale</label>
@@ -419,7 +419,7 @@ function handleCellClick(params) {
 
   applySelHighlights();
   updateSelBar();
-  if (tableType === 'species') renderDispersionForSelection();
+  if (tableType === 'species' || tableType === 'ecosystem') renderDispersionForSelection();
 }
 
 // ═══════════════════════════════════════════════════════
@@ -528,7 +528,7 @@ function applySelEdit() {
 
   updateCharts();
   setTimeout(applySelHighlights, 0);
-  if (DISPERSION_FIELDS.has(field)) refreshDispersionIfActive();
+  if (DISPERSION_FIELDS.has(field) || NOISE_FIELDS.has(field)) refreshDispersionIfActive();
   setStatus(`"${val}" → ${count} cell${count !== 1 ? 's' : ''} in ${field}`);
 }
 
@@ -561,7 +561,7 @@ function applyScaleFactor(selCells, api, factorInputId, highlightFn, chartFn) {
 
   if (chartFn) chartFn();
   setTimeout(highlightFn, 0);
-  if (DISPERSION_FIELDS.has(field)) refreshDispersionIfActive();
+  if (DISPERSION_FIELDS.has(field) || NOISE_FIELDS.has(field)) refreshDispersionIfActive();
   setStatus(`×${factor} → ${count} cell${count !== 1 ? 's' : ''} in ${field}`);
 }
 
@@ -595,7 +595,7 @@ function applyRandomizeRange(selCells, api, pctInputId, highlightFn, chartFn) {
 
   if (chartFn) chartFn();
   setTimeout(highlightFn, 0);
-  if (DISPERSION_FIELDS.has(field)) refreshDispersionIfActive();
+  if (DISPERSION_FIELDS.has(field) || NOISE_FIELDS.has(field)) refreshDispersionIfActive();
   setStatus(`🎲 ±${pct}% → ${updates.length} cell${updates.length !== 1 ? 's' : ''} in ${field}`);
 }
 
@@ -800,7 +800,7 @@ function initGrid(rows, defs) {
       }
       updateCharts();
       setTimeout(applySelHighlights, 0);
-      if (DISPERSION_FIELDS.has(field)) refreshDispersionIfActive();
+      if (DISPERSION_FIELDS.has(field) || NOISE_FIELDS.has(field)) refreshDispersionIfActive();
     },
   });
 
@@ -1323,13 +1323,13 @@ function drawScaleBar(ctx, w, gridM) {
 // Draw a small house silhouette at real-world size (10m wide × 8m deep)
 // for human scale reference. Skipped if it would be too small or too large.
 function drawHouseIcon(ctx, w, gridM) {
-  const houseM   = 10;
-  const houseDM  = 8;
-  const pxPerM   = w / gridM;
-  const houseW   = houseM  * pxPerM;
-  const bodyH    = houseDM * pxPerM;
-  if (houseW < 6) return;            // too small to render meaningfully
-  if (houseW > w * 0.9) return;      // grid is smaller than the house
+  const houseM  = 10;
+  const houseDM = 8;
+  const pxPerM  = w / gridM;
+  const houseW  = houseM  * pxPerM;
+  const bodyH   = houseDM * pxPerM;
+  if (houseW < 6)    return;
+  if (houseW > w * 0.9) return;
 
   const roofH = bodyH * 0.55;
   const m     = 10;
@@ -1337,40 +1337,22 @@ function drawHouseIcon(ctx, w, gridM) {
   const y     = w - m - 4 - bodyH - roofH - 14;
 
   ctx.save();
-  // Subtle shadow so it stays visible over dot patterns
-  ctx.fillStyle   = 'rgba(0,0,0,0.45)';
-  ctx.fillRect(x - 2, y - 2, houseW + 4, bodyH + roofH + 4);
-
-  ctx.fillStyle   = '#e8d8b8';
   ctx.strokeStyle = '#0a1422';
   ctx.lineWidth   = 1;
 
-  // Roof
+  // Roof (triangle)
   ctx.beginPath();
-  ctx.moveTo(x - 2,            y + roofH);
-  ctx.lineTo(x + houseW / 2,   y);
-  ctx.lineTo(x + houseW + 2,   y + roofH);
+  ctx.moveTo(x - 2,          y + roofH);
+  ctx.lineTo(x + houseW / 2, y);
+  ctx.lineTo(x + houseW + 2, y + roofH);
   ctx.closePath();
   ctx.fillStyle = '#a85a3a';
   ctx.fill(); ctx.stroke();
 
-  // Body
+  // Body (square)
   ctx.fillStyle = '#e8d8b8';
   ctx.fillRect(x, y + roofH, houseW, bodyH);
   ctx.strokeRect(x + 0.5, y + roofH + 0.5, houseW - 1, bodyH - 1);
-
-  // Door + window if there's room
-  if (houseW > 16) {
-    const doorW = houseW * 0.22;
-    const doorH = bodyH * 0.6;
-    ctx.fillStyle = '#3a2a1a';
-    ctx.fillRect(x + houseW * 0.55, y + roofH + bodyH - doorH, doorW, doorH);
-    if (houseW > 28) {
-      const winS = Math.min(houseW * 0.18, bodyH * 0.4);
-      ctx.fillStyle = '#7ec8f8';
-      ctx.fillRect(x + houseW * 0.12, y + roofH + bodyH * 0.25, winS, winS);
-    }
-  }
 
   // Label
   ctx.fillStyle    = '#e8d8b8';
@@ -1379,6 +1361,30 @@ function drawHouseIcon(ctx, w, gridM) {
   ctx.textBaseline = 'top';
   ctx.fillText(`house ~${houseM}m`, x + houseW / 2, y + roofH + bodyH + 2);
   ctx.restore();
+}
+
+// 2D value noise with 4-octave FBM; returns sample(u, v) → [0, 1].
+// u/v are in noise-space: pass (worldX / noiseSizeM, worldY / noiseSizeM).
+function makeValueNoise(seed) {
+  const rng = seededRng(seed);
+  const G = 64;
+  const T = new Float32Array(G * G);
+  for (let i = 0; i < T.length; i++) T[i] = rng();
+  function lerp(a, b, t) { return a + t * (b - a); }
+  function smooth(t) { return t * t * (3 - 2 * t); }
+  function grid(xi, yi) { return T[((yi & (G - 1)) * G) + (xi & (G - 1))]; }
+  return function sample(u, v) {
+    let val = 0, amp = 1, freq = 1, total = 0;
+    for (let o = 0; o < 4; o++) {
+      const gx = u * freq, gy = v * freq;
+      const xi = Math.floor(gx), yi = Math.floor(gy);
+      const xf = smooth(gx - xi), yf = smooth(gy - yi);
+      val   += lerp(lerp(grid(xi, yi), grid(xi + 1, yi), xf),
+                    lerp(grid(xi, yi + 1), grid(xi + 1, yi + 1), xf), yf) * amp;
+      total += amp; amp *= 0.5; freq *= 2;
+    }
+    return val / total;
+  };
 }
 
 // mulberry32 — deterministic seeded RNG
@@ -1503,11 +1509,10 @@ function generateDispersionPoints(type, targetR, scale, warp, seed, count, gridS
 // One pattern per row, distinct color per row.
 function renderDispersionForSelection() {
   const section = document.getElementById('dispersion-section');
-  if (tableType !== 'species' || !gridApi) {
-    section.style.display = 'none';
-    dispCurrentRowIds = [];
-    return;
-  }
+  if (!gridApi) { section.style.display = 'none'; dispCurrentRowIds = []; return; }
+  if (tableType === 'ecosystem') { renderNoiseForSelection(); return; }
+  if (tableType !== 'species') { section.style.display = 'none'; dispCurrentRowIds = []; return; }
+  document.getElementById('dispersion-section-title').textContent = 'Dispersion Pattern';
 
   // Unique row ids from current selection, preserving insertion order
   const seen = new Set();
@@ -1612,6 +1617,108 @@ function renderDispersionForSelection() {
   document.getElementById('dispersion-info').innerHTML = infoLines.join('<br>');
 }
 
+// Render spatial noise heatmap for all selected ecosystem rows.
+function renderNoiseForSelection() {
+  const section = document.getElementById('dispersion-section');
+  document.getElementById('dispersion-section-title').textContent = 'Spatial Noise';
+
+  const seen = new Set(), rowIds = [];
+  selectedCells.forEach(k => {
+    const id = k.split('||')[0];
+    if (!seen.has(id)) { seen.add(id); rowIds.push(id); }
+  });
+  const nodes = rowIds.map(id => gridApi.getRowNode(id)).filter(Boolean);
+  if (nodes.length === 0) { section.style.display = 'none'; dispCurrentRowIds = []; return; }
+
+  dispCurrentRowIds = nodes.map(n => n.id);
+  section.style.display = '';
+
+  const canvas = document.getElementById('dispersion-canvas');
+  const w = canvas.parentElement.clientWidth - 24;
+  canvas.width = w; canvas.height = w;
+  const ctx = canvas.getContext('2d');
+
+  const imgData = ctx.createImageData(w, w);
+  const px = imgData.data;
+
+  // Background fill (#0a1422)
+  for (let i = 0; i < px.length; i += 4) { px[i] = 10; px[i+1] = 20; px[i+2] = 34; px[i+3] = 255; }
+
+  const n     = nodes.length;
+  const alpha = n === 1 ? 1.0 : n <= 3 ? 0.72 : n <= 6 ? 0.55 : 0.42;
+
+  // Pre-parse each row's noise params
+  const layers = nodes.map((node, idx) => {
+    const noiseSize = Math.max(1, parseFloat(node.data.SpatialNoiseSize) || 1000);
+    const strength  = Math.max(0.1, parseFloat(node.data.SpatialNoiseStrength) || 2.0);
+    const seed      = parseInt(node.data.SpatialNoiseSeed, 10) || 0;
+    const hex       = PATTERN_COLORS[idx % PATTERN_COLORS.length];
+    const cr = parseInt(hex.slice(1,3), 16);
+    const cg = parseInt(hex.slice(3,5), 16);
+    const cb = parseInt(hex.slice(5,7), 16);
+    const freq = dispGridSizeM / noiseSize;
+    return { sample: makeValueNoise(seed), freq, strength, cr, cg, cb };
+  });
+
+  // Render pixel rows. Step by 2 for performance, fill 2×2 blocks.
+  const step = w > 300 ? 2 : 1;
+  for (let py = 0; py < w; py += step) {
+    for (let qx = 0; qx < w; qx += step) {
+      const u = qx / w, v = py / w;
+      let r = 10, g = 20, b = 34;
+      layers.forEach(({ sample, freq, strength, cr, cg, cb }) => {
+        const raw     = sample(u * freq, v * freq);           // 0..1
+        const density = Math.max(0, Math.min(1, 0.5 + (raw - 0.5) * strength));
+        r += cr * density * alpha;
+        g += cg * density * alpha;
+        b += cb * density * alpha;
+      });
+      const R = Math.min(255, r | 0), G = Math.min(255, g | 0), B = Math.min(255, b | 0);
+      for (let dy = 0; dy < step && py + dy < w; dy++) {
+        for (let dx = 0; dx < step && qx + dx < w; dx++) {
+          const i = ((py + dy) * w + (qx + dx)) * 4;
+          px[i] = R; px[i+1] = G; px[i+2] = B; px[i+3] = 255;
+        }
+      }
+    }
+  }
+  ctx.putImageData(imgData, 0, 0);
+
+  // Grid lines overlay
+  ctx.strokeStyle = 'rgba(26,42,69,0.5)';
+  ctx.lineWidth = 1;
+  for (let i = 1; i < 8; i++) {
+    const p = (i / 8) * w;
+    ctx.beginPath(); ctx.moveTo(p, 0); ctx.lineTo(p, w); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(0, p); ctx.lineTo(w, p); ctx.stroke();
+  }
+  ctx.strokeStyle = '#3a5a90'; ctx.strokeRect(0.5, 0.5, w - 1, w - 1);
+
+  drawHouseIcon(ctx, w, dispGridSizeM);
+  drawScaleBar(ctx, w, dispGridSizeM);
+
+  const infoLines = [];
+  nodes.forEach((node, idx) => {
+    const hex      = PATTERN_COLORS[idx % PATTERN_COLORS.length];
+    const noiseSize = parseFloat(node.data.SpatialNoiseSize) || 1000;
+    const strength  = parseFloat(node.data.SpatialNoiseStrength) || 2.0;
+    const seed      = parseInt(node.data.SpatialNoiseSeed, 10) || 0;
+    if (n === 1) {
+      infoLines.push(
+        `<span style="color:${hex}">${esc(node.data._key)}</span>` +
+        `<br><span style="color:#7a9abf">noise size ${noiseSize.toLocaleString()} m · strength ${strength.toFixed(2)} · seed ${seed}</span>`
+      );
+    } else {
+      infoLines.push(
+        `<span style="display:inline-block;width:9px;height:9px;background:${hex};border-radius:50%;vertical-align:middle;margin-right:6px"></span>` +
+        `<span style="color:${hex}">${esc(node.data._key)}</span>` +
+        `<span style="color:#7a9abf"> · ${noiseSize.toLocaleString()} m · str ${strength.toFixed(2)}</span>`
+      );
+    }
+  });
+  document.getElementById('dispersion-info').innerHTML = infoLines.join('<br>');
+}
+
 // Re-render after edits — selection drives what we draw, so just re-run.
 function refreshDispersionIfActive() {
   if (dispCurrentRowIds.length === 0) return;
@@ -1621,6 +1728,9 @@ function refreshDispersionIfActive() {
 const DISPERSION_FIELDS = new Set([
   'DispersionType', 'TargetRIndex', 'DispersionScale',
   'DispersionWarpStrength', 'DispersionSeed'
+]);
+const NOISE_FIELDS = new Set([
+  'SpatialNoiseSize', 'SpatialNoiseStrength', 'SpatialNoiseSeed'
 ]);
 
 // ═══════════════════════════════════════════════════════
