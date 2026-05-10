@@ -6,7 +6,7 @@ Step-by-step guide to editing Unreal Engine DataTable CSV files with `ue-datatab
 
 ## Requirements
 
-- **Browser:** Chrome or Edge (version 86 or later). Firefox is not supported — it lacks the File System Access API needed for the open/save dialogs.
+- **Browser:** Chrome or Edge (version 86 or later) when opening the file directly from disk. Other Chromium browsers (Brave, Arc, Vivaldi, Opera) work too but typically require the page to be served over `http://localhost` — see Troubleshooting. Firefox and Safari are not supported — they lack the File System Access API needed for the open/save dialogs.
 - **Internet connection:** The editor loads AG Grid, Papa Parse, and Chart.js from CDN on first open.
 - **Python 3 + Pillow + numpy** (optional): only needed if you want to generate thumbnail images from UE content browser screenshots.
 
@@ -64,6 +64,17 @@ To multiply selected cells by a number rather than replacing them:
 Each cell's current value is multiplied independently — cells with different values will produce different results. Float fields remain formatted to 6 decimal places.
 
 > Example: selecting three cells with values 200, 300, 400 and applying factor 0.5 produces 100, 150, 200.
+
+### Randomizing values within a percentage range
+To add natural variation to a column of values (e.g. StemsPerHectare across species, or EcosystemDensity across ecosystems):
+
+1. Select cells in a single numeric column.
+2. In the **%** input to the right of the × Scale button, type a percentage — for example `20` for ±20%.
+3. Click **🎲 Randomize** or press **Enter** while the % input is focused.
+
+Each selected cell is multiplied independently by a random factor in `[1 − N%, 1 + N%]`, then rounded to a nice whole number whose trailing digits are only zeros or a single 5 (e.g. 150, 500, 1250, 2500). The rounding step is chosen based on the value's magnitude, so small numbers still vary and big numbers keep clean trailing zeros.
+
+> Example: three cells at 1000 stems/ha randomized ±20% might produce 850, 1100, 1200 — all rounded to the nearest 50 or 100.
 
 ### Adding a row
 Click **+ Add Row** in the toolbar to append a new row at the bottom of the table with default values. Edit the row key (Name field) and other fields as needed.
@@ -200,7 +211,12 @@ The right-hand sidebar shows live charts that update as you edit.
 ## Troubleshooting
 
 **The Open/Save buttons don't work.**
-Make sure you are using Chrome or Edge version 86 or later. Firefox does not support the File System Access API.
+Make sure you are using Chrome or Edge version 86 or later. Firefox and Safari do not support the File System Access API.
+
+**Open/Save buttons do nothing in Brave (or another Chromium browser).**
+Brave disables the File System Access API on `file://` origins as part of its privacy hardening, so double-clicking the HTML file won't show the picker. Two options:
+- Open the file in Edge or Chrome instead — neither applies that restriction to `file://`.
+- Serve the folder over localhost (e.g. `python -m http.server 8000`, then open `http://localhost:8000/ue-datatable-editor.html`). The API is fully enabled on localhost.
 
 **The table loaded but all columns show as plain text.**
 The file may not be a recognized Species or Ecosystem table. Check that the CSV has either a `MeshVariants` column or a `SpeciesList` column.

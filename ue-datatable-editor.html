@@ -117,6 +117,10 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; b
   <span style="color:#3a5a80;padding:0 4px;">|</span>
   <input id="sel-factor" type="number" placeholder="× factor" step="any" title="Multiply selected values by this factor" style="width:90px;">
   <button class="btn" onclick="applyFactor()" title="Multiply each selected cell's value by the factor">× Scale</button>
+  <span style="color:#3a5a80;padding:0 4px;">|</span>
+  <input id="sel-pct" type="number" value="20" step="any" min="0" title="Randomize each selected cell within ±N% of its current value" style="width:70px;background:#06101e;color:#e0e0e0;border:1px solid #3a6aaa;padding:4px 9px;border-radius:3px;font-size:12px;">
+  <span style="color:#8aaad0;font-size:11px;">%</span>
+  <button class="btn" onclick="applyRandomize()" title="Randomize each selected cell within ±N% of its current value, rounded to a nice whole number">🎲 Randomize</button>
   <!-- Range input (SlopeRange, AspectRange, WetnessRange, MicroTopoRange) -->
   <div id="sel-range">
     <label>Min</label><input id="sel-min" type="number" step="0.01" placeholder="0.00">
@@ -139,6 +143,18 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; b
     <div class="sidebar-section">
       <h4 id="chart2-label">Age Class Distribution</h4>
       <div class="chart-wrap"><canvas id="chart2" height="180"></canvas></div>
+    </div>
+    <div class="sidebar-section" id="dispersion-section" style="display:none;">
+      <h4>Dispersion Pattern</h4>
+      <div class="chart-wrap">
+        <div id="dispersion-scale-row" style="display:flex;align-items:center;gap:8px;padding:0 0 6px;">
+          <label style="font-size:10px;color:#7a9abf;text-transform:uppercase;letter-spacing:0.5px;">Scale</label>
+          <input id="dispersion-scale" type="range" min="0" max="9" value="4" step="1" style="flex:1;accent-color:#5a9ae0;">
+          <span id="dispersion-scale-label" style="font-size:11px;color:#90b8e8;min-width:64px;text-align:right;font-variant-numeric:tabular-nums;">100 m</span>
+        </div>
+        <canvas id="dispersion-canvas" height="200" style="border:1px solid #0f3460;border-radius:4px;background:#0a1422;display:block;"></canvas>
+        <div id="dispersion-info" style="padding:8px 4px 0;font-size:11px;color:#7a9abf;text-align:center;line-height:1.5;"></div>
+      </div>
     </div>
   </div>
 </div>
@@ -195,11 +211,13 @@ let modalAnchorCell = null;
 // Charts
 let chart1 = null, chart2 = null;
 
-const AGE_CLASSES  = ['Seedling', 'Sapling', 'Mature', 'Dead'];
+const AGE_CLASSES       = ['Seedling', 'Sapling', 'Mature', 'Dead'];
+const DISPERSION_TYPES  = ['Clumping', 'Uniform', 'Random', 'Poisson'];
 const RANGE_FIELDS = new Set(['SlopeRange', 'AspectRange', 'WetnessRange', 'MicroTopoRange']);
 // Fields that always serialize as 6-decimal floats in UE
 const FLOAT_FIELDS = new Set([
   'StemsPerHectare',
+  'TargetRIndex', 'DispersionScale', 'DispersionWarpStrength',
   'SeedlingAgeWeight', 'SaplingAgeWeight', 'MatureAgeWeight', 'DeadAgeWeight',
   'EcosystemDensity', 'EdgeBlendDistance', 'SpatialNoiseSize', 'SpatialNoiseStrength',
   'ScaleByDensityMin', 'ScaleByDensityMax',
@@ -210,6 +228,21 @@ const FLOAT_FIELDS = new Set([
 // UE FORMAT HELPERS
 // ═══════════════════════════════════════════════════════
 const ff = n => parseFloat(n || 0).toFixed(6);
+
+// Round a number to a "nice" value whose trailing digits are only 0s or a 5
+// (e.g. 20, 45, 150, 500, 1250, 2500, 10000). Step is picked from
+// {5, 10, 50, 100, 500, 1000, ...} so the rounded result has ~5–10% granularity.
+// Small values (<5) keep one decimal so randomize still produces variation.
+function niceRound(value) {
+  const abs = Math.abs(value);
+  if (abs < 1) return Math.round(value * 100) / 100;
+  if (abs < 5) return Math.round(value * 10) / 10;
+  const target = Math.max(5, abs / 10);
+  const steps = [5, 10, 50, 100, 500, 1000, 5000, 10000, 50000, 100000, 500000];
+  let step = 5;
+  for (const s of steps) { if (s <= target) step = s; else break; }
+  return Math.sign(value) * Math.round(abs / step) * step;
+}
 
 function parseVec2(s) {
   const m = String(s).match(/X=([\d.eE+-]+),Y=([\d.eE+-]+)/);
@@ -386,6 +419,7 @@ function handleCellClick(params) {
 
   applySelHighlights();
   updateSelBar();
+  if (tableType === 'species') renderDispersionForSelection();
 }
 
 // ═══════════════════════════════════════════════════════
@@ -464,6 +498,8 @@ function clearSel() {
   anchorCell = null;
   applySelHighlights();
   document.getElementById('sel-bar').classList.remove('on');
+  document.getElementById('dispersion-section').style.display = 'none';
+  dispCurrentRowIds = [];
 }
 
 function applySelEdit() {
@@ -492,6 +528,7 @@ function applySelEdit() {
 
   updateCharts();
   setTimeout(applySelHighlights, 0);
+  if (DISPERSION_FIELDS.has(field)) refreshDispersionIfActive();
   setStatus(`"${val}" → ${count} cell${count !== 1 ? 's' : ''} in ${field}`);
 }
 
@@ -524,11 +561,45 @@ function applyScaleFactor(selCells, api, factorInputId, highlightFn, chartFn) {
 
   if (chartFn) chartFn();
   setTimeout(highlightFn, 0);
+  if (DISPERSION_FIELDS.has(field)) refreshDispersionIfActive();
   setStatus(`×${factor} → ${count} cell${count !== 1 ? 's' : ''} in ${field}`);
 }
 
 function applyFactor()      { applyScaleFactor(selectedCells,      gridApi,      'sel-factor',       applySelHighlights,      updateCharts); }
 function applyModalFactor() { applyScaleFactor(modalSelectedCells, modalGridApi, 'modal-sel-factor', applyModalSelHighlights, null); }
+
+function applyRandomizeRange(selCells, api, pctInputId, highlightFn, chartFn) {
+  const pct = parseFloat(document.getElementById(pctInputId).value);
+  if (isNaN(pct) || pct <= 0) { setStatus('Enter a percentage first (e.g. 20 for ±20%)'); return; }
+
+  const fields = new Set([...selCells].map(k => k.split('||')[1]));
+  if (fields.size !== 1) return;
+  const field = [...fields][0];
+  if (RANGE_FIELDS.has(field)) { setStatus('Randomize not supported for range fields'); return; }
+
+  const isFloat = FLOAT_FIELDS.has(field);
+  const updates = [];
+  selCells.forEach(k => {
+    const [rowId] = k.split('||');
+    const node = api.getRowNode(rowId);
+    if (!node) return;
+    const cur = parseFloat(node.data[field]);
+    if (isNaN(cur)) return;
+    const factor  = 1 + (Math.random() * 2 - 1) * (pct / 100);
+    const rounded = niceRound(cur * factor);
+    updates.push({ node, newVal: isFloat ? rounded.toFixed(6) : String(rounded) });
+  });
+  if (updates.length === 0) { setStatus('No numeric cells to randomize'); return; }
+  updates.forEach(({ node, newVal }) => { node.data[field] = newVal; });
+  api.refreshCells({ rowNodes: updates.map(u => u.node), columns: [field], force: true });
+
+  if (chartFn) chartFn();
+  setTimeout(highlightFn, 0);
+  if (DISPERSION_FIELDS.has(field)) refreshDispersionIfActive();
+  setStatus(`🎲 ±${pct}% → ${updates.length} cell${updates.length !== 1 ? 's' : ''} in ${field}`);
+}
+
+function applyRandomize() { applyRandomizeRange(selectedCells, gridApi, 'sel-pct', applySelHighlights, updateCharts); }
 
 // Keyboard shortcuts on all selection bar inputs
 document.addEventListener('DOMContentLoaded', () => {
@@ -542,6 +613,10 @@ document.addEventListener('DOMContentLoaded', () => {
     if (e.key === 'Enter')  { e.preventDefault(); applyFactor(); }
     if (e.key === 'Escape') { e.preventDefault(); clearSel(); }
   });
+  document.getElementById('sel-pct').addEventListener('keydown', e => {
+    if (e.key === 'Enter')  { e.preventDefault(); applyRandomize(); }
+    if (e.key === 'Escape') { e.preventDefault(); clearSel(); }
+  });
   document.getElementById('modal-sel-val').addEventListener('keydown', e => {
     if (e.key === 'Enter')  { e.preventDefault(); applyModalSelEdit(); }
     if (e.key === 'Escape') { e.preventDefault(); clearModalSel(); }
@@ -549,6 +624,17 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('modal-sel-factor').addEventListener('keydown', e => {
     if (e.key === 'Enter')  { e.preventDefault(); applyModalFactor(); }
     if (e.key === 'Escape') { e.preventDefault(); clearModalSel(); }
+  });
+
+  const dispScaleEl   = document.getElementById('dispersion-scale');
+  const dispScaleLbl  = document.getElementById('dispersion-scale-label');
+  const fmtMeters = m => m >= 1000 ? `${m / 1000} km` : `${m} m`;
+  dispScaleLbl.textContent = fmtMeters(dispGridSizeM);
+  dispScaleEl.addEventListener('input', () => {
+    const idx = Math.max(0, Math.min(DISP_SCALE_STEPS_M.length - 1, +dispScaleEl.value | 0));
+    dispGridSizeM = DISP_SCALE_STEPS_M[idx];
+    dispScaleLbl.textContent = fmtMeters(dispGridSizeM);
+    refreshDispersionIfActive();
   });
 });
 
@@ -601,7 +687,13 @@ function buildColDefs(type, headers) {
 
   if (type === 'species') return [
     keyCol,
-    { field: 'StemsPerHectare',    headerName: 'Stems/ha',  editable: true, width: 90,  type: 'numericColumn' },
+    { field: 'StemsPerHectare',    headerName: 'Stems/ha',       editable: true, width: 90,  type: 'numericColumn' },
+    { field: 'DispersionType',     headerName: 'Dispersion',     editable: true, width: 110,
+      cellEditor: 'agSelectCellEditor', cellEditorParams: { values: DISPERSION_TYPES } },
+    { field: 'TargetRIndex',       headerName: 'Target R',       editable: true, width: 85,  type: 'numericColumn' },
+    { field: 'DispersionScale',    headerName: 'Disp Scale',     editable: true, width: 90,  type: 'numericColumn' },
+    { field: 'DispersionWarpStrength', headerName: 'Warp Str',   editable: true, width: 90,  type: 'numericColumn' },
+    { field: 'DispersionSeed',     headerName: 'Disp Seed',      editable: true, width: 85,  type: 'numericColumn' },
     { field: 'SlopeRange',         headerName: 'Slope',     editable: true, width: 110, cellRenderer: rangeRenderer },
     { field: 'AspectRange',        headerName: 'Aspect',    editable: true, width: 110, cellRenderer: rangeRenderer },
     { field: 'WetnessRange',       headerName: 'Wetness',   editable: true, width: 110, cellRenderer: rangeRenderer },
@@ -708,6 +800,7 @@ function initGrid(rows, defs) {
       }
       updateCharts();
       setTimeout(applySelHighlights, 0);
+      if (DISPERSION_FIELDS.has(field)) refreshDispersionIfActive();
     },
   });
 
@@ -1079,19 +1172,47 @@ async function openThumbs() {
 // ═══════════════════════════════════════════════════════
 // FILE  I/O
 // ═══════════════════════════════════════════════════════
+function loadCsvText(text, name) {
+  const { headers, rows } = parseCSV(text);
+  document.getElementById('table-badge').textContent =
+    tableType === 'species' ? 'Species Table' : tableType === 'ecosystem' ? 'Ecosystem Table' : 'Data Table';
+  document.getElementById('file-name').textContent = name;
+  initGrid(rows, buildColDefs(tableType, headers));
+  setStatus(`${rows.length} rows loaded`);
+}
+
 async function openFile() {
-  try {
-    [fileHandle] = await window.showOpenFilePicker({
-      types: [{ description: 'CSV files', accept: { 'text/csv': ['.csv'] } }]
+  // Modern path: File System Access API (Chrome/Edge over HTTPS/localhost).
+  if (window.showOpenFilePicker) {
+    try {
+      [fileHandle] = await window.showOpenFilePicker({
+        types: [{ description: 'CSV files', accept: { 'text/csv': ['.csv'] } }]
+      });
+      const file = await fileHandle.getFile();
+      loadCsvText(await file.text(), fileHandle.name);
+    } catch (e) { if (e.name !== 'AbortError') setStatus('Open error: ' + e.message); }
+    return;
+  }
+  // Fallback for sandboxed iframes / Firefox / Safari: hidden file input.
+  // No fileHandle available — saveFile() will go through the download fallback.
+  fileHandle = null;
+  let inp = document.getElementById('_fallback-file-input');
+  if (!inp) {
+    inp = document.createElement('input');
+    inp.type = 'file';
+    inp.accept = '.csv,text/csv';
+    inp.id = '_fallback-file-input';
+    inp.style.display = 'none';
+    inp.addEventListener('change', async () => {
+      const f = inp.files?.[0];
+      if (!f) return;
+      try { loadCsvText(await f.text(), f.name); }
+      catch (e) { setStatus('Open error: ' + e.message); }
+      inp.value = '';
     });
-    const text = await (await fileHandle.getFile()).text();
-    const { headers, rows } = parseCSV(text);
-    document.getElementById('table-badge').textContent =
-      tableType === 'species' ? 'Species Table' : tableType === 'ecosystem' ? 'Ecosystem Table' : 'Data Table';
-    document.getElementById('file-name').textContent = fileHandle.name;
-    initGrid(rows, buildColDefs(tableType, headers));
-    setStatus(`${rows.length} rows loaded`);
-  } catch (e) { if (e.name !== 'AbortError') setStatus('Open error: ' + e.message); }
+    document.body.appendChild(inp);
+  }
+  inp.click();
 }
 async function saveFile() {
   if (!gridApi) { setStatus('Nothing to save'); return; }
@@ -1134,6 +1255,8 @@ function addRow() {
   origHeaders.slice(1).forEach(h => { base[h] = ''; });
   if (tableType === 'species') Object.assign(base, {
     StemsPerHectare: '100.000000',
+    DispersionType: 'Clumping', TargetRIndex: '0.600000', DispersionScale: '0.800000',
+    DispersionWarpStrength: '2.000000', DispersionSeed: '0',
     SlopeRange: '(X=0.000000,Y=1.000000)', AspectRange: '(X=0.000000,Y=1.000000)',
     WetnessRange: '(X=0.000000,Y=1.000000)', MicroTopoRange: '(X=0.000000,Y=1.000000)',
     SeedlingAgeWeight: '1.000000', SaplingAgeWeight: '1.000000',
@@ -1151,6 +1274,354 @@ function addRow() {
   gridApi.applyTransaction({ add: [base] });
   setStatus('Row added — click the Row Name cell to rename it');
 }
+
+// ═══════════════════════════════════════════════════════
+// DISPERSION PATTERN VISUALIZER
+// Live preview of spatial pattern from DispersionType, TargetRIndex,
+// DispersionScale, DispersionWarpStrength, DispersionSeed
+// Multiple selected rows render as overlaid colored patterns.
+// ═══════════════════════════════════════════════════════
+let dispCurrentRowIds = [];
+
+// Slider step → grid edge length in meters. Index 4 (100m) is the default.
+const DISP_SCALE_STEPS_M = [5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000];
+let dispGridSizeM = 100;
+
+const PATTERN_COLORS = [
+  '#7ec8f8', '#f08c4a', '#5acc8a', '#a78bfa',
+  '#f06a8a', '#ffd700', '#4ecdc4', '#ff8c42',
+  '#c084fc', '#fb7185', '#fbbf24', '#34d399'
+];
+
+// Draw a scale bar (bottom-left) sized to a "nice" round number of meters
+function drawScaleBar(ctx, w, gridM) {
+  const targetPx  = w * 0.22;
+  const targetM   = (targetPx / w) * gridM;
+  const nice      = [0.5, 1, 2, 5, 10, 20, 25, 50, 100, 200, 250, 500, 1000, 2000];
+  let chosen = nice[0];
+  for (const v of nice) if (v <= targetM) chosen = v;
+  const barPx = (chosen / gridM) * w;
+  const m     = 10;
+  const x = m, y = w - m - 4;
+
+  ctx.save();
+  ctx.strokeStyle = '#90b8e8';
+  ctx.lineWidth   = 2;
+  ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x + barPx, y); ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(x, y - 4);             ctx.lineTo(x, y + 4);
+  ctx.moveTo(x + barPx, y - 4);     ctx.lineTo(x + barPx, y + 4);
+  ctx.stroke();
+  ctx.fillStyle    = '#90b8e8';
+  ctx.font         = '10px -apple-system, sans-serif';
+  ctx.textBaseline = 'bottom';
+  ctx.textAlign    = 'left';
+  ctx.fillText(chosen >= 1 ? `${chosen} m` : `${chosen * 100} cm`, x, y - 6);
+  ctx.restore();
+}
+
+// Draw a small house silhouette at real-world size (10m wide × 8m deep)
+// for human scale reference. Skipped if it would be too small or too large.
+function drawHouseIcon(ctx, w, gridM) {
+  const houseM   = 10;
+  const houseDM  = 8;
+  const pxPerM   = w / gridM;
+  const houseW   = houseM  * pxPerM;
+  const bodyH    = houseDM * pxPerM;
+  if (houseW < 6) return;            // too small to render meaningfully
+  if (houseW > w * 0.9) return;      // grid is smaller than the house
+
+  const roofH = bodyH * 0.55;
+  const m     = 10;
+  const x     = w - m - houseW;
+  const y     = w - m - 4 - bodyH - roofH - 14;
+
+  ctx.save();
+  // Subtle shadow so it stays visible over dot patterns
+  ctx.fillStyle   = 'rgba(0,0,0,0.45)';
+  ctx.fillRect(x - 2, y - 2, houseW + 4, bodyH + roofH + 4);
+
+  ctx.fillStyle   = '#e8d8b8';
+  ctx.strokeStyle = '#0a1422';
+  ctx.lineWidth   = 1;
+
+  // Roof
+  ctx.beginPath();
+  ctx.moveTo(x - 2,            y + roofH);
+  ctx.lineTo(x + houseW / 2,   y);
+  ctx.lineTo(x + houseW + 2,   y + roofH);
+  ctx.closePath();
+  ctx.fillStyle = '#a85a3a';
+  ctx.fill(); ctx.stroke();
+
+  // Body
+  ctx.fillStyle = '#e8d8b8';
+  ctx.fillRect(x, y + roofH, houseW, bodyH);
+  ctx.strokeRect(x + 0.5, y + roofH + 0.5, houseW - 1, bodyH - 1);
+
+  // Door + window if there's room
+  if (houseW > 16) {
+    const doorW = houseW * 0.22;
+    const doorH = bodyH * 0.6;
+    ctx.fillStyle = '#3a2a1a';
+    ctx.fillRect(x + houseW * 0.55, y + roofH + bodyH - doorH, doorW, doorH);
+    if (houseW > 28) {
+      const winS = Math.min(houseW * 0.18, bodyH * 0.4);
+      ctx.fillStyle = '#7ec8f8';
+      ctx.fillRect(x + houseW * 0.12, y + roofH + bodyH * 0.25, winS, winS);
+    }
+  }
+
+  // Label
+  ctx.fillStyle    = '#e8d8b8';
+  ctx.font         = '9px -apple-system, sans-serif';
+  ctx.textAlign    = 'center';
+  ctx.textBaseline = 'top';
+  ctx.fillText(`house ~${houseM}m`, x + houseW / 2, y + roofH + bodyH + 2);
+  ctx.restore();
+}
+
+// mulberry32 — deterministic seeded RNG
+function seededRng(seed) {
+  let s = (seed | 0) || 1;
+  return function () {
+    s |= 0; s = (s + 0x6D2B79F5) | 0;
+    let t = Math.imul(s ^ (s >>> 15), 1 | s);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+// Box-Muller standard normal
+function gaussian(rng) {
+  let u = 0, v = 0;
+  while (u === 0) u = rng();
+  while (v === 0) v = rng();
+  return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v);
+}
+
+// Compute Clark-Evans nearest-neighbor R index for a point set in a unit square
+function clarkEvansR(points) {
+  const n = points.length;
+  if (n < 2) return 0;
+  let sumD = 0;
+  for (let i = 0; i < n; i++) {
+    let best = Infinity;
+    for (let j = 0; j < n; j++) {
+      if (i === j) continue;
+      const dx = points[i][0] - points[j][0];
+      const dy = points[i][1] - points[j][1];
+      const d2 = dx * dx + dy * dy;
+      if (d2 < best) best = d2;
+    }
+    sumD += Math.sqrt(best);
+  }
+  const meanD    = sumD / n;
+  const expected = 0.5 / Math.sqrt(n);   // unit-square area = 1
+  return meanD / expected;
+}
+
+// Generate a dispersion pattern as N points in [0,1]² based on UE field values.
+// `gridSizeM` is the real-world edge length the unit square represents — it lets
+// cluster radii (Clumping) and cluster counts use real meters/hectares so the
+// pattern visibly densifies/sparsifies as you zoom the scale slider.
+function generateDispersionPoints(type, targetR, scale, warp, seed, count, gridSizeM) {
+  const rng = seededRng(seed);
+  const N   = Math.max(0, count | 0);
+  let pts   = [];
+
+  const s = Math.max(0.05, Math.min(2.0, scale || 0.8));
+  const G = (gridSizeM > 0) ? gridSizeM : 100;
+  const areaHa = (G * G) / 10000;
+
+  if (type === 'Random' || type === 'Poisson') {
+    for (let i = 0; i < N; i++) pts.push([rng(), rng()]);
+
+  } else if (type === 'Clumping') {
+    // Thomas process. Cluster radius is in REAL METERS so a 4m clump looks
+    // huge at a 10m grid and tiny at a 1km grid — same real-world clump.
+    const r       = Math.max(0.05, Math.min(1.5, targetR || 0.5));
+    const sigmaM  = s * 5 * (1.2 - Math.min(1.0, r));   // ~4m at scale=1, r=0.5
+    const sigma   = sigmaM / G;
+    // Cluster density per hectare grows with R (more, smaller clumps as R→1).
+    // Capped so each cluster keeps ≥4 offspring for a visibly clumpy pattern.
+    const clustersPerHa = 4 + 25 * r;
+    const targetK = Math.round(areaHa * clustersPerHa) || 1;
+    const numClusters = Math.max(2, Math.min(Math.max(2, Math.floor(N / 4)), targetK));
+    const centers = [];
+    for (let i = 0; i < numClusters; i++) centers.push([rng(), rng()]);
+    for (let i = 0; i < N; i++) {
+      const c  = centers[(rng() * numClusters) | 0];
+      const dx = gaussian(rng) * sigma;
+      const dy = gaussian(rng) * sigma;
+      pts.push([c[0] + dx, c[1] + dy]);
+    }
+
+  } else if (type === 'Uniform') {
+    // Jittered grid; cell width auto-scales with N (which is now density-based)
+    // so spacing already follows real meters between trees.
+    const r        = Math.max(0.5, Math.min(2.15, targetR || 1.5));
+    const jitter   = Math.max(0, (2.15 - r) / 2.15) * 0.5 * s;
+    const cols     = Math.max(1, Math.ceil(Math.sqrt(N)));
+    const rows     = Math.max(1, Math.ceil(N / cols));
+    const cw       = 1 / cols;
+    const ch       = 1 / rows;
+    let placed = 0;
+    for (let yi = 0; yi < rows && placed < N; yi++) {
+      for (let xi = 0; xi < cols && placed < N; xi++, placed++) {
+        const offsetX = (yi % 2) * (cw * 0.5);   // hex-ish offset
+        const x = xi * cw + cw * 0.5 + offsetX + (rng() - 0.5) * cw * jitter;
+        const y = yi * ch + ch * 0.5             + (rng() - 0.5) * ch * jitter;
+        pts.push([x, y]);
+      }
+    }
+  }
+
+  // Apply warp distortion (DispersionWarpStrength)
+  // Adds smooth sinusoidal displacement scaled by warp value.
+  if (warp && warp > 0) {
+    const w  = Math.min(5, warp) * 0.04;
+    const fx = 2 + rng() * 4;
+    const fy = 2 + rng() * 4;
+    const px = rng() * Math.PI * 2;
+    const py = rng() * Math.PI * 2;
+    pts = pts.map(([x, y]) => [
+      x + Math.sin(y * fx + px) * w,
+      y + Math.cos(x * fy + py) * w
+    ]);
+  }
+
+  // Clamp to unit square
+  pts = pts.map(([x, y]) => [
+    Math.max(0, Math.min(1, x)),
+    Math.max(0, Math.min(1, y))
+  ]);
+  return pts;
+}
+
+// Render dispersion preview for all rows that have at least one selected cell.
+// One pattern per row, distinct color per row.
+function renderDispersionForSelection() {
+  const section = document.getElementById('dispersion-section');
+  if (tableType !== 'species' || !gridApi) {
+    section.style.display = 'none';
+    dispCurrentRowIds = [];
+    return;
+  }
+
+  // Unique row ids from current selection, preserving insertion order
+  const seen = new Set();
+  const rowIds = [];
+  selectedCells.forEach(k => {
+    const id = k.split('||')[0];
+    if (!seen.has(id)) { seen.add(id); rowIds.push(id); }
+  });
+
+  const nodes = rowIds.map(id => gridApi.getRowNode(id)).filter(Boolean);
+  if (nodes.length === 0) {
+    section.style.display = 'none';
+    dispCurrentRowIds = [];
+    return;
+  }
+
+  dispCurrentRowIds = nodes.map(n => n.id);
+  section.style.display = '';
+
+  const canvas = document.getElementById('dispersion-canvas');
+  const w = canvas.parentElement.clientWidth - 24;
+  canvas.width  = w;
+  canvas.height = w;
+  const ctx = canvas.getContext('2d');
+  ctx.clearRect(0, 0, w, w);
+
+  // Background + grid + border
+  ctx.fillStyle = '#0a1422';
+  ctx.fillRect(0, 0, w, w);
+  ctx.strokeStyle = '#1a2a45';
+  ctx.lineWidth = 1;
+  for (let i = 1; i < 8; i++) {
+    const p = (i / 8) * w;
+    ctx.beginPath(); ctx.moveTo(p, 0); ctx.lineTo(p, w); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(0, p); ctx.lineTo(w, p); ctx.stroke();
+  }
+  ctx.strokeStyle = '#3a5a90';
+  ctx.strokeRect(0.5, 0.5, w - 1, w - 1);
+
+  // Real-world density: N per pattern = stems/ha × area in ha.
+  // Capped per pattern so very large grids stay performant and visually parseable.
+  const MAX_PTS_PER_PATTERN = 3000;
+  const areaHa = (dispGridSizeM * dispGridSizeM) / 10000;
+  const n      = nodes.length;
+  const alpha  = n === 1 ? 1.0 : n <= 3 ? 0.72 : n <= 6 ? 0.55 : 0.42;
+
+  // Dot size = approximate tree canopy in real meters (≈1.5 m radius),
+  // clamped so it stays legible at extreme zooms.
+  const treeRadiusM = 1.5;
+  const dotR = Math.max(0.7, Math.min(7, (treeRadiusM / dispGridSizeM) * w));
+
+  const infoLines = [];
+  ctx.globalAlpha = alpha;
+  nodes.forEach((node, idx) => {
+    const d          = node.data;
+    const type       = d.DispersionType || 'Random';
+    const targetR    = parseFloat(d.TargetRIndex)            || 0;
+    const scale      = parseFloat(d.DispersionScale)         || 0;
+    const warp       = parseFloat(d.DispersionWarpStrength)  || 0;
+    const seed       = parseInt  (d.DispersionSeed, 10)      || 0;
+    const stemsPerHa = parseFloat(d.StemsPerHectare)         || 0;
+    const color      = PATTERN_COLORS[idx % PATTERN_COLORS.length];
+
+    const realN = Math.max(0, Math.round(stemsPerHa * areaHa));
+    const N     = Math.min(MAX_PTS_PER_PATTERN, realN);
+    const subsampled = realN > N;
+
+    const pts = generateDispersionPoints(type, targetR, scale, warp, seed, N, dispGridSizeM);
+
+    ctx.fillStyle = color;
+    pts.forEach(([x, y]) => {
+      ctx.beginPath();
+      ctx.arc(x * w, y * w, dotR, 0, Math.PI * 2);
+      ctx.fill();
+    });
+
+    if (n === 1) {
+      const actualR = pts.length >= 2 ? clarkEvansR(pts).toFixed(3) : '–';
+      const subnote = subsampled ? ` <span style="color:#a07050">(of ${realN.toLocaleString()})</span>` : '';
+      infoLines.push(
+        `<span style="color:${color}">${esc(type)}</span>` +
+        `  ·  R<sub>target</sub>=${targetR.toFixed(2)}` +
+        `  ·  R<sub>actual</sub>=${actualR}` +
+        `<br><span style="color:#7a9abf">${stemsPerHa.toLocaleString()} stems/ha · ${areaHa.toFixed(areaHa < 1 ? 3 : 2)} ha · n=${N.toLocaleString()}${subnote}</span>` +
+        `<br><span style="color:#5a7090">scale ${scale.toFixed(2)} · warp ${warp.toFixed(2)} · seed ${seed}</span>`
+      );
+    } else {
+      const sub = subsampled ? `${N.toLocaleString()}/${realN.toLocaleString()}` : N.toLocaleString();
+      infoLines.push(
+        `<span style="display:inline-block;width:9px;height:9px;background:${color};border-radius:50%;vertical-align:middle;margin-right:6px"></span>` +
+        `<span style="color:${color}">${esc(node.data._key)}</span>` +
+        `<span style="color:#7a9abf"> · ${esc(type)} · ${stemsPerHa.toLocaleString()} stems/ha · n=${sub}</span>`
+      );
+    }
+  });
+  ctx.globalAlpha = 1.0;
+
+  // Scale reference overlays
+  drawHouseIcon(ctx, w, dispGridSizeM);
+  drawScaleBar(ctx, w, dispGridSizeM);
+
+  document.getElementById('dispersion-info').innerHTML = infoLines.join('<br>');
+}
+
+// Re-render after edits — selection drives what we draw, so just re-run.
+function refreshDispersionIfActive() {
+  if (dispCurrentRowIds.length === 0) return;
+  renderDispersionForSelection();
+}
+
+const DISPERSION_FIELDS = new Set([
+  'DispersionType', 'TargetRIndex', 'DispersionScale',
+  'DispersionWarpStrength', 'DispersionSeed'
+]);
 
 // ═══════════════════════════════════════════════════════
 // UTILS

@@ -11,3 +11,7 @@ desktop.ini
 *-mod.csv
 *-orig.csv
 Backup/
+
+# Python
+__pycache__/
+*.pyc

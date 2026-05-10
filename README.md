@@ -54,6 +54,13 @@ Next to the Apply button is a **× Scale** input and button:
 - Each cell's current value is multiplied independently by the factor
 - Float fields remain serialized to 6 decimal places after scaling
 
+### Randomize ±%
+Next to the × Scale control is a **% / 🎲 Randomize** input and button:
+- Select cells in a single numeric column, enter a percentage (default `20`), and click **🎲 Randomize** (or press Enter)
+- Each cell is multiplied independently by a random factor in `[1 − N%, 1 + N%]`, then rounded to a "nice" whole number whose trailing digits are only zeros or a single 5 (e.g. 150, 500, 1250, 2500)
+- The rounding step is chosen from `{5, 10, 50, 100, 500, 1000, …}` based on the value's magnitude, so small numbers still vary and big numbers keep clean trailing zeros
+- Useful for adding natural variation across StemsPerHectare, EcosystemDensity, SpatialNoiseSize, etc.
+
 ### MeshVariants Column
 Clicking a cell in the **Mesh Variants** column opens a modal grid editor. Each variant is a row with the same multi-cell selection, bulk-edit, and scale-factor tools. Columns:
 
@@ -167,4 +174,12 @@ The scale operation pre-computes all new values from current row data before app
 Papa Parse is used only for parsing. Serialization is done manually to match UE's exact quoting format: `origHeaders.join(',')` for the header line (no quotes); first column unquoted then `'"' + value + '"'` for all remaining columns.
 
 ### Browser Requirements
-Requires Chrome 86+ or Edge 86+ for the File System Access API (`showOpenFilePicker`, `showSaveFilePicker`, `showDirectoryPicker`). Falls back to a standard browser download if the API is unavailable.
+Requires Chrome 86+ or Edge 86+ for the File System Access API (`showOpenFilePicker`, `showSaveFilePicker`, `showDirectoryPicker`). Falls back to a standard browser download if the save API is unavailable.
+
+Other Chromium browsers (Brave, Arc, Vivaldi, Opera) ship the same API but may block it on `file://` origins as part of their privacy hardening — Brave is a notable example. Workarounds: open the page in Chrome/Edge instead, or serve the folder over `http://localhost` (e.g. `python -m http.server 8000`).
+
+---
+
+## Credits
+
+Built collaboratively with the **Claude** coding agent inside **Anthropic Antigravity**.
