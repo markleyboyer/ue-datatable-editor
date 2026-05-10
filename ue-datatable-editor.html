@@ -54,6 +54,35 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; b
 #grid-wrap { flex: 1; overflow: hidden; }
 #grid { width: 100%; height: 100%; }
 
+/* ── File panel ── */
+#file-panel { width: 210px; background: #0d1627; border-right: 1px solid #0f3460; display: none; flex-direction: column; overflow: hidden; flex-shrink: 0; }
+#fp-header { padding: 7px 10px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid #0f3460; flex-shrink: 0; background: #10182e; }
+#fp-header span { font-size: 11px; color: #8aaad0; text-transform: uppercase; letter-spacing: 0.5px; }
+#fp-body { overflow-y: auto; flex: 1; padding: 4px 0; }
+.fp-section-head { font-size: 10px; color: #5a7a9a; text-transform: uppercase; letter-spacing: 0.5px; padding: 8px 10px 3px; }
+.fp-entry { display: flex; align-items: center; padding: 5px 8px; cursor: pointer; border-radius: 3px; margin: 1px 4px; gap: 4px; }
+.fp-entry:hover { background: #1a2a45; }
+.fp-active { background: #1e3560; }
+.fp-active:hover { background: #244070; }
+.fp-name { flex: 1; font-size: 11px; color: #c0d8f0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.fp-dirty { color: #fbbf24 !important; }
+.fp-dup-btn { background: none; border: none; color: #5a7a9a; cursor: pointer; font-size: 13px; padding: 0 2px; flex-shrink: 0; line-height: 1; }
+.fp-dup-btn:hover { color: #90b8e8; }
+.fp-close-btn { background: none; border: none; color: #4a3a3a; cursor: pointer; font-size: 12px; padding: 0 2px; flex-shrink: 0; line-height: 1; }
+.fp-close-btn:hover { color: #cc5555; }
+.fp-ref { display: flex; align-items: center; gap: 5px; padding: 2px 8px 2px 22px; font-size: 10px; border-radius: 3px; margin: 0 4px; }
+.fp-ref-loaded { color: #7ec8f8; cursor: pointer; }
+.fp-ref-loaded:hover { background: #1a2a45; }
+.fp-ref-missing { color: #3a5a70; cursor: default; }
+.fp-ref-arrow { color: #2a4a60; flex-shrink: 0; }
+
+/* ── Dirty-save confirm ── */
+#fp-confirm { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.65); z-index: 200; align-items: center; justify-content: center; }
+#fp-confirm-box { background: #16213e; border: 1px solid #3a6aaa; border-radius: 8px; padding: 22px 24px; max-width: 380px; width: 90vw; box-shadow: 0 8px 40px rgba(0,0,0,0.6); }
+#fp-confirm-box p { color: #c0d8f0; margin: 0 0 18px; font-size: 13px; line-height: 1.5; }
+#fp-confirm-box strong { color: #7ec8f8; }
+#fp-confirm-btns { display: flex; gap: 8px; justify-content: flex-end; }
+
 /* ── Sidebar ── */
 #sidebar { width: 300px; background: #16213e; border-left: 1px solid #0f3460; display: flex; flex-direction: column; overflow-y: auto; flex-shrink: 0; }
 .sidebar-section { border-bottom: 1px solid #0f3460; }
@@ -96,7 +125,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; b
 <body>
 
 <div id="toolbar">
-  <button class="btn" onclick="openFile()">📂 Open CSV</button>
+  <button class="btn" onclick="openFiles()">📂 Open CSV</button>
   <button class="btn green" onclick="saveFile()">💾 Save CSV</button>
   <div class="tsep"></div>
   <button class="btn purple" onclick="openThumbs()">🖼 Thumbnails Folder</button>
@@ -131,6 +160,13 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; b
 </div>
 
 <div id="main">
+  <div id="file-panel">
+    <div id="fp-header">
+      <span>Files</span>
+      <button class="btn" onclick="openFiles()" title="Add files" style="padding:2px 8px;font-size:11px;">+ Add</button>
+    </div>
+    <div id="fp-body"></div>
+  </div>
   <div id="grid-wrap">
     <div id="grid" class="ag-theme-alpine-dark"></div>
   </div>
@@ -196,6 +232,12 @@ let thumbDir     = null;
 let thumbCache   = {};
 let tableType    = null;   // 'species' | 'ecosystem'
 let origHeaders  = [];
+
+// File registry
+const fileRegistry = new Map(); // filename → { name, type, rows, headers, handle, dirty }
+let activeFileName = null;
+let isDirty        = false;
+let _fpConfirmResolve = null;
 
 // Cell selection
 const selectedCells = new Set();  // "rowId||field"
@@ -530,6 +572,7 @@ function applySelEdit() {
   setTimeout(applySelHighlights, 0);
   if (DISPERSION_FIELDS.has(field) || NOISE_FIELDS.has(field)) refreshDispersionIfActive();
   setStatus(`"${val}" → ${count} cell${count !== 1 ? 's' : ''} in ${field}`);
+  markDirty();
 }
 
 function applyScaleFactor(selCells, api, factorInputId, highlightFn, chartFn) {
@@ -563,6 +606,7 @@ function applyScaleFactor(selCells, api, factorInputId, highlightFn, chartFn) {
   setTimeout(highlightFn, 0);
   if (DISPERSION_FIELDS.has(field) || NOISE_FIELDS.has(field)) refreshDispersionIfActive();
   setStatus(`×${factor} → ${count} cell${count !== 1 ? 's' : ''} in ${field}`);
+  markDirty();
 }
 
 function applyFactor()      { applyScaleFactor(selectedCells,      gridApi,      'sel-factor',       applySelHighlights,      updateCharts); }
@@ -597,6 +641,7 @@ function applyRandomizeRange(selCells, api, pctInputId, highlightFn, chartFn) {
   setTimeout(highlightFn, 0);
   if (DISPERSION_FIELDS.has(field) || NOISE_FIELDS.has(field)) refreshDispersionIfActive();
   setStatus(`🎲 ±${pct}% → ${updates.length} cell${updates.length !== 1 ? 's' : ''} in ${field}`);
+  markDirty();
 }
 
 function applyRandomize() { applyRandomizeRange(selectedCells, gridApi, 'sel-pct', applySelHighlights, updateCharts); }
@@ -679,7 +724,7 @@ function buildColDefs(type, headers) {
       btn.onclick = () => {
         gridApi.applyTransaction({ remove: [params.data] });
         selectedCells.forEach(k => { if (k.split('||')[0] === params.node.id) selectedCells.delete(k); });
-        applySelHighlights(); updateSelBar(); updateCharts();
+        applySelHighlights(); updateSelBar(); updateCharts(); markDirty();
       };
       return btn;
     }
@@ -734,25 +779,22 @@ function buildColDefs(type, headers) {
 function parseCSV(text) {
   const res = Papa.parse(text.trim(), { header: false, skipEmptyLines: true });
   if (res.data.length < 2) return { headers: [], rows: [] };
-  origHeaders = res.data[0];
-  tableType   = detectType(origHeaders);
-  const rows  = res.data.slice(1).map(row => {
+  const headers = res.data[0];
+  const rows    = res.data.slice(1).map(row => {
     const obj = { _key: row[0] };
-    origHeaders.slice(1).forEach((h, i) => { obj[h] = row[i + 1] ?? ''; });
+    headers.slice(1).forEach((h, i) => { obj[h] = row[i + 1] ?? ''; });
     return obj;
   });
-  return { headers: origHeaders, rows };
+  return { headers, rows };
 }
 
-function serializeCSV(rows) {
-  const esc = v => '"' + String(v == null ? '' : v).replace(/"/g, '""') + '"';
-  const lines = [];
-  // Header row: UE exports headers with no quoting
-  lines.push(origHeaders.join(','));
-  // Data rows: UE exports row key (first column) unquoted, all other values quoted
+function serializeCSV(rows, headers) {
+  headers = headers || origHeaders;
+  const escVal = v => '"' + String(v == null ? '' : v).replace(/"/g, '""') + '"';
+  const lines = [headers.join(',')];
   rows.forEach(r => {
     const cols = [r._key];
-    origHeaders.slice(1).forEach(h => cols.push(esc(r[h] ?? '')));
+    headers.slice(1).forEach(h => cols.push(escVal(r[h] ?? '')));
     lines.push(cols.join(','));
   });
   return lines.join('\r\n') + '\r\n';
@@ -801,6 +843,7 @@ function initGrid(rows, defs) {
       updateCharts();
       setTimeout(applySelHighlights, 0);
       if (DISPERSION_FIELDS.has(field) || NOISE_FIELDS.has(field)) refreshDispersionIfActive();
+      markDirty();
     },
   });
 
@@ -1172,42 +1215,75 @@ async function openThumbs() {
 // ═══════════════════════════════════════════════════════
 // FILE  I/O
 // ═══════════════════════════════════════════════════════
-function loadCsvText(text, name) {
+function loadCsvText(text, name, handle) {
   const { headers, rows } = parseCSV(text);
+  const type = detectType(headers);
+  fileRegistry.set(name, { name, type, rows, headers, handle: handle || null, dirty: false });
+  // Activate immediately (no dirty check — this is a fresh load from disk)
+  activeFileName = name;
+  isDirty        = false;
+  origHeaders    = headers;
+  tableType      = type;
+  fileHandle     = handle || null;
   document.getElementById('table-badge').textContent =
-    tableType === 'species' ? 'Species Table' : tableType === 'ecosystem' ? 'Ecosystem Table' : 'Data Table';
+    type === 'species' ? 'Species Table' : type === 'ecosystem' ? 'Ecosystem Table' : 'Data Table';
   document.getElementById('file-name').textContent = name;
-  initGrid(rows, buildColDefs(tableType, headers));
+  initGrid(rows, buildColDefs(type, headers));
   setStatus(`${rows.length} rows loaded`);
+  document.getElementById('file-panel').style.display = 'flex';
+  renderFilePanel();
 }
 
-async function openFile() {
-  // Modern path: File System Access API (Chrome/Edge over HTTPS/localhost).
+async function openFiles() {
   if (window.showOpenFilePicker) {
     try {
-      [fileHandle] = await window.showOpenFilePicker({
+      const handles = await window.showOpenFilePicker({
+        multiple: true,
         types: [{ description: 'CSV files', accept: { 'text/csv': ['.csv'] } }]
       });
-      const file = await fileHandle.getFile();
-      loadCsvText(await file.text(), fileHandle.name);
+      for (const h of handles) {
+        const file = await h.getFile();
+        const { headers, rows } = parseCSV(await file.text());
+        const type = detectType(headers);
+        fileRegistry.set(h.name, { name: h.name, type, rows, headers, handle: h, dirty: false });
+      }
+      // If no file is active yet, switch to first ecosystem or first file
+      if (!activeFileName) {
+        const names = [...fileRegistry.keys()];
+        const target = names.find(n => fileRegistry.get(n).type === 'ecosystem') || names[0];
+        if (target) await switchToFile(target);
+      } else {
+        document.getElementById('file-panel').style.display = 'flex';
+        renderFilePanel();
+      }
     } catch (e) { if (e.name !== 'AbortError') setStatus('Open error: ' + e.message); }
     return;
   }
-  // Fallback for sandboxed iframes / Firefox / Safari: hidden file input.
-  // No fileHandle available — saveFile() will go through the download fallback.
-  fileHandle = null;
+  // Fallback: hidden multi-file input (Firefox / Safari / sandboxed iframe)
   let inp = document.getElementById('_fallback-file-input');
   if (!inp) {
     inp = document.createElement('input');
     inp.type = 'file';
     inp.accept = '.csv,text/csv';
+    inp.multiple = true;
     inp.id = '_fallback-file-input';
     inp.style.display = 'none';
     inp.addEventListener('change', async () => {
-      const f = inp.files?.[0];
-      if (!f) return;
-      try { loadCsvText(await f.text(), f.name); }
-      catch (e) { setStatus('Open error: ' + e.message); }
+      for (const f of inp.files) {
+        try {
+          const { headers, rows } = parseCSV(await f.text());
+          const type = detectType(headers);
+          fileRegistry.set(f.name, { name: f.name, type, rows, headers, handle: null, dirty: false });
+        } catch (e) { setStatus('Open error: ' + e.message); }
+      }
+      if (!activeFileName) {
+        const names = [...fileRegistry.keys()];
+        const target = names.find(n => fileRegistry.get(n).type === 'ecosystem') || names[0];
+        if (target) await switchToFile(target);
+      } else {
+        document.getElementById('file-panel').style.display = 'flex';
+        renderFilePanel();
+      }
       inp.value = '';
     });
     document.body.appendChild(inp);
@@ -1219,29 +1295,31 @@ async function saveFile() {
   const rows = [];
   gridApi.forEachNode(n => rows.push(n.data));
   const csv = serializeCSV(rows);
+  const suggestedName = activeFileName || fileHandle?.name || 'output.csv';
   try {
+    if (!window.showSaveFilePicker) throw new Error('not supported');
     const fh = await window.showSaveFilePicker({
-      suggestedName: fileHandle?.name || 'output.csv',
+      suggestedName,
       types: [{ description: 'CSV', accept: { 'text/csv': ['.csv'] } }]
     });
     const w = await fh.createWritable();
     await w.write(csv);
     await w.close();
     fileHandle = fh;
+    if (activeFileName) { const rec = fileRegistry.get(activeFileName); if (rec) rec.handle = fh; }
+    markClean();
     setStatus('Saved ✓');
   } catch (e) {
-    console.error('Save error:', e);
     if (e.name === 'AbortError') { setStatus('Save cancelled'); return; }
     // showSaveFilePicker not supported or blocked — fall back to download
     const blob = new Blob([csv], { type: 'text/csv' });
     const url = URL.createObjectURL(blob);
-    const a = Object.assign(document.createElement('a'), {
-      href: url, download: fileHandle?.name || 'output.csv'
-    });
+    const a = Object.assign(document.createElement('a'), { href: url, download: suggestedName });
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
+    markClean();
     setStatus('Saved ✓ (downloaded)');
   }
 }
@@ -1272,7 +1350,212 @@ function addRow() {
     SpatialNoiseSeed: '0', RandomSeed: '0'
   });
   gridApi.applyTransaction({ add: [base] });
+  markDirty();
   setStatus('Row added — click the Row Name cell to rename it');
+}
+
+// ═══════════════════════════════════════════════════════
+// FILE MANAGEMENT
+// ═══════════════════════════════════════════════════════
+
+function markDirty() {
+  if (!activeFileName) return;
+  isDirty = true;
+  const rec = fileRegistry.get(activeFileName);
+  if (rec) rec.dirty = true;
+  renderFilePanel();
+}
+
+function markClean() {
+  isDirty = false;
+  const rec = fileRegistry.get(activeFileName);
+  if (rec) rec.dirty = false;
+  renderFilePanel();
+}
+
+function fpConfirmChoice(choice) {
+  document.getElementById('fp-confirm').style.display = 'none';
+  if (_fpConfirmResolve) { _fpConfirmResolve(choice); _fpConfirmResolve = null; }
+}
+
+function askSaveConfirm(filename) {
+  return new Promise(resolve => {
+    _fpConfirmResolve = resolve;
+    document.getElementById('fp-confirm-name').textContent = filename || 'this file';
+    document.getElementById('fp-confirm').style.display = 'flex';
+  });
+}
+
+async function switchToFile(name) {
+  if (name === activeFileName) return;
+  if (isDirty) {
+    const choice = await askSaveConfirm(activeFileName);
+    if (choice === 'cancel') return;
+    if (choice === 'save') await saveFile();
+  }
+  // Snapshot current grid rows back into registry before leaving
+  if (activeFileName && fileRegistry.has(activeFileName) && gridApi) {
+    const rec = fileRegistry.get(activeFileName);
+    const rows = [];
+    gridApi.forEachNode(n => rows.push({ ...n.data }));
+    rec.rows = rows;
+  }
+  const rec = fileRegistry.get(name);
+  if (!rec) return;
+  activeFileName = name;
+  isDirty        = false;
+  origHeaders    = rec.headers;
+  tableType      = rec.type;
+  fileHandle     = rec.handle;
+  document.getElementById('table-badge').textContent =
+    rec.type === 'species' ? 'Species Table' : rec.type === 'ecosystem' ? 'Ecosystem Table' : 'Data Table';
+  document.getElementById('file-name').textContent = name;
+  initGrid(rec.rows, buildColDefs(rec.type, rec.headers));
+  document.getElementById('file-panel').style.display = 'flex';
+  setStatus(`${rec.rows.length} rows`);
+  renderFilePanel();
+}
+
+// Extract SDT asset name from a SpeciesList field value.
+// Format: /Script/Engine.DataTable'/Game/.../SDT_ConesGreen.SDT_ConesGreen'
+function parseSpeciesAssetName(val) {
+  const m = val && val.match(/\/([^\/]+)\.\1'/);
+  return m ? m[1] : null;
+}
+
+// Return unique SDT references from an ecosystem row array, with load status.
+function getReferencedSDTs(rows) {
+  const seen = new Map();
+  (rows || []).forEach(row => {
+    const assetName = parseSpeciesAssetName(row.SpeciesList);
+    if (!assetName || seen.has(assetName)) return;
+    const loadedFileName = [...fileRegistry.keys()].find(k =>
+      k.replace(/\.csv$/i, '') === assetName
+    ) || null;
+    seen.set(assetName, { assetName, loadedFileName });
+  });
+  return [...seen.values()];
+}
+
+async function closeFile(name) {
+  const rec = fileRegistry.get(name);
+  if (!rec) return;
+
+  const fileDirty = (name === activeFileName) ? isDirty : rec.dirty;
+
+  if (fileDirty) {
+    // Get the rows to save — use live grid data if this is the active file
+    let rows = rec.rows;
+    if (name === activeFileName && gridApi) {
+      rows = [];
+      gridApi.forEachNode(n => rows.push({ ...n.data }));
+    }
+    const csv = serializeCSV(rows, rec.headers);
+    try {
+      if (!window.showSaveFilePicker) throw new Error('not supported');
+      const fh = await window.showSaveFilePicker({
+        suggestedName: rec.name,
+        types: [{ description: 'CSV', accept: { 'text/csv': ['.csv'] } }]
+      });
+      const w = await fh.createWritable();
+      await w.write(csv); await w.close();
+    } catch (e) {
+      if (e.name === 'AbortError') return; // user cancelled — keep file open
+      // Fallback download
+      const blob = new Blob([csv], { type: 'text/csv' });
+      const url  = URL.createObjectURL(blob);
+      const a    = Object.assign(document.createElement('a'), { href: url, download: rec.name });
+      document.body.appendChild(a); a.click();
+      document.body.removeChild(a); URL.revokeObjectURL(url);
+    }
+  }
+
+  fileRegistry.delete(name);
+
+  if (name === activeFileName) {
+    activeFileName = null; isDirty = false; fileHandle = null;
+    if (fileRegistry.size > 0) {
+      const remaining = [...fileRegistry.keys()];
+      const next = remaining.find(n => fileRegistry.get(n).type === 'ecosystem') || remaining[0];
+      await switchToFile(next);
+    } else {
+      if (gridApi) { gridApi.destroy(); gridApi = null; }
+      clearSel();
+      tableType = null; origHeaders = [];
+      document.getElementById('table-badge').textContent = 'No file loaded';
+      document.getElementById('file-name').textContent  = '';
+      document.getElementById('dispersion-section').style.display = 'none';
+      dispCurrentRowIds = [];
+      document.getElementById('file-panel').style.display = 'none';
+    }
+  } else {
+    renderFilePanel();
+  }
+}
+
+function duplicateFile(name) {
+  const rec = fileRegistry.get(name);
+  if (!rec) return;
+  const base = name.replace(/\.csv$/i, '');
+  let newName = base + '_copy.csv';
+  let n = 2;
+  while (fileRegistry.has(newName)) newName = `${base}_copy${n++}.csv`;
+  fileRegistry.set(newName, {
+    name: newName, type: rec.type,
+    rows: rec.rows.map(r => ({ ...r })),
+    headers: [...rec.headers],
+    handle: null, dirty: true
+  });
+  switchToFile(newName);
+}
+
+function renderFilePanel() {
+  const body = document.getElementById('fp-body');
+  if (!body || fileRegistry.size === 0) return;
+
+  const ecoFiles = [...fileRegistry.values()].filter(r => r.type === 'ecosystem');
+  const spcFiles = [...fileRegistry.values()].filter(r => r.type === 'species');
+
+  let html = '';
+
+  // sq() wraps a name in single quotes for safe use inside onclick="..." attributes.
+  // CSV filenames never contain single quotes so no escaping needed.
+  const sq = n => `'${n}'`;
+
+  if (ecoFiles.length) {
+    html += `<div class="fp-section-head">Ecosystem Tables</div>`;
+    ecoFiles.forEach(rec => {
+      const isActive = rec.name === activeFileName;
+      const dirty    = isActive ? isDirty : rec.dirty;
+      html += `<div class="fp-entry${isActive ? ' fp-active' : ''}" onclick="switchToFile(${sq(rec.name)})">
+        <span class="fp-name${dirty ? ' fp-dirty' : ''}">${esc(rec.name.replace(/\.csv$/i, ''))}${dirty ? ' *' : ''}</span>
+        <button class="fp-dup-btn" title="Duplicate" onclick="event.stopPropagation();duplicateFile(${sq(rec.name)})">⎘</button>
+        <button class="fp-close-btn" title="Close" onclick="event.stopPropagation();closeFile(${sq(rec.name)})">✕</button>
+      </div>`;
+      getReferencedSDTs(rec.rows).forEach(({ assetName, loadedFileName }) => {
+        if (loadedFileName) {
+          html += `<div class="fp-ref fp-ref-loaded" onclick="switchToFile(${sq(loadedFileName)})"><span class="fp-ref-arrow">└</span><span>${esc(assetName)}</span></div>`;
+        } else {
+          html += `<div class="fp-ref fp-ref-missing"><span class="fp-ref-arrow">└</span><span>${esc(assetName)}</span></div>`;
+        }
+      });
+    });
+  }
+
+  if (spcFiles.length) {
+    html += `<div class="fp-section-head">Species Tables</div>`;
+    spcFiles.forEach(rec => {
+      const isActive = rec.name === activeFileName;
+      const dirty    = isActive ? isDirty : rec.dirty;
+      html += `<div class="fp-entry${isActive ? ' fp-active' : ''}" onclick="switchToFile(${sq(rec.name)})">
+        <span class="fp-name${dirty ? ' fp-dirty' : ''}">${esc(rec.name.replace(/\.csv$/i, ''))}${dirty ? ' *' : ''}</span>
+        <button class="fp-dup-btn" title="Duplicate" onclick="event.stopPropagation();duplicateFile(${sq(rec.name)})">⎘</button>
+        <button class="fp-close-btn" title="Close" onclick="event.stopPropagation();closeFile(${sq(rec.name)})">✕</button>
+      </div>`;
+    });
+  }
+
+  body.innerHTML = html;
 }
 
 // ═══════════════════════════════════════════════════════
@@ -1750,5 +2033,16 @@ document.getElementById('modal-bg').addEventListener('click', e => {
 });
 </script>
 <div id="thumb-popup"></div>
+
+<div id="fp-confirm">
+  <div id="fp-confirm-box">
+    <p>Save changes to <strong id="fp-confirm-name"></strong> before switching?</p>
+    <div id="fp-confirm-btns">
+      <button class="btn" onclick="fpConfirmChoice('cancel')">Cancel</button>
+      <button class="btn" onclick="fpConfirmChoice('discard')">Discard</button>
+      <button class="btn green" onclick="fpConfirmChoice('save')">Save</button>
+    </div>
+  </div>
+</div>
 </body>
 </html>
