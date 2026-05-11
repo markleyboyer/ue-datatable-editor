@@ -8,7 +8,7 @@ No install, no build step. Open the link in any modern browser, click **📂 Ope
 
 ## Purpose
 
-The Aziel Arts Ecological Biome system uses Unreal Engine DataTables to define species placement rules and ecosystem compositions. This tool lets you edit those CSVs in a spreadsheet-like interface with bulk multi-cell editing, scale-factor operations, live charts, a grid-based modal editor for the nested MeshVariants field, and a live spatial preview of dispersion patterns — then save them back in a format UE can re-import without modification.
+The Aziel Arts Ecological Biome system uses Unreal Engine DataTables to define species placement rules and ecosystem compositions. This tool lets you edit those CSVs in a spreadsheet-like interface with bulk multi-cell editing, scale-factor operations, live charts, inline sub-grid editing for the nested MeshVariants field, multi-file simultaneous editing, and a live spatial preview of dispersion patterns — then save them back in a format UE can re-import without modification.
 
 ## Files
 
@@ -29,9 +29,11 @@ See [HOW-TO-USE.md](HOW-TO-USE.md) for step-by-step instructions.
 ## How to Use
 
 1. Open the [hosted editor](https://markleyboyer.github.io/ue-datatable-editor/) — or `ue-datatable-editor.html` locally in any browser
-2. Click **📂 Open CSV** and pick a DataTable CSV from your disk
-3. Edit values in the grid
-4. Click **💾 Save CSV** — saves back over the original file (Chrome/Edge) or to your Downloads folder (other browsers)
+2. Click **📂 Open CSV** to load one or more DataTable CSVs from your disk
+3. **Single-file mode**: Click a filename to view that file in the grid
+4. **Multi-file mode**: Shift+click files in the left panel to select multiple and view them simultaneously, separated by labeled divider rows. All editing operations (Apply, Scale, Randomize) work across rows from different files.
+5. Edit values in the grid
+6. Click **💾 Save CSV** — saves all modified files back over the originals (Chrome/Edge) or to your Downloads folder (other browsers)
 
 ### Browser support
 
@@ -46,7 +48,19 @@ GitHub Pages serves over HTTPS, which is what the in-place save path needs — r
 
 ### Thumbnail Support
 
-Click **Thumbnails Folder** and select the `SpeciesScreenShots/Thumbnails/` folder. All PNG files are preloaded into memory. Thumbnails then appear in the Mesh Variants modal as a small preview column; hovering over any thumbnail shows a large 400×400 popup.
+Click **Thumbnails Folder** and select the `SpeciesScreenShots/Thumbnails/` folder. All PNG files are preloaded into memory. Thumbnails then appear in the inline Mesh Variants sub-grid as a small preview column; hovering over any thumbnail shows a large 400×400 popup.
+
+---
+
+## File Management
+
+### Multi-File Editing
+The left panel shows all open files. Click a filename to view that file's rows in the grid. To edit multiple files simultaneously:
+- **Shift+click** a filename to add it to the grid view
+- **Shift+click** again to remove it
+- All selected files' rows appear in the grid, separated by blue divider rows showing each file's name
+- All bulk editing operations (Apply, Scale, Randomize, variant edits) automatically apply to the correct file for each row
+- Save saves all modified files at once
 
 ---
 
@@ -77,21 +91,21 @@ Next to the × Scale control is a **% / 🎲 Randomize** input and button:
 - The rounding step is chosen from `{5, 10, 50, 100, 500, 1000, …}` based on the value's magnitude, so small numbers still vary and big numbers keep clean trailing zeros
 - Useful for adding natural variation across StemsPerHectare, EcosystemDensity, SpatialNoiseSize, etc.
 
-### MeshVariants Column
-Clicking a cell in the **Mesh Variants** column opens a modal grid editor. Each variant is a row with the same multi-cell selection, bulk-edit, and scale-factor tools. Columns:
+### MeshVariants (Inline Sub-Grid)
+Click the **▶** chevron next to any species row name to expand an inline sub-grid showing all mesh variants for that species. Each variant is a row with its own editable cells and a thumbnail preview. Columns:
 
 | Column | Description |
 |--------|-------------|
 | (thumbnail) | Mesh preview image, if thumbnails folder is loaded |
 | Mesh Asset Path | Full UE asset path to the static mesh |
-| Age Class | Seedling / Sapling / Mature / Dead |
+| Age Class | Seedling / Sapling / Mature / Dead (dropdown) |
 | Age Wt | AgeClassWeight |
 | Scale Min / Max | ScaleRange X and Y |
 | Align | AlignToSurface (0–1) |
 | Z Offset | ZPositionOffset |
 | ✕ | Remove this variant row |
 
-Click **+ Add Variant** to append a new row. Click **✓ Save Variants** to write back to the main table.
+Changes to variant fields are saved immediately to the parent species row's `MeshVariants` field and marked dirty. Click **+ Add Variant** to append a new row. Click the **▼** chevron to collapse the sub-grid.
 
 ---
 
@@ -221,6 +235,12 @@ AG Grid Community does not support multi-cell range selection (that is an Enterp
 
 ### Scale Factor
 The scale operation pre-computes all new values from current row data before applying any writes, then sets `node.data[field]` directly and calls `api.refreshCells()`. This bypasses `onCellValueChanged` entirely, preventing the normal broadcast-to-selection behavior from overwriting other cells with the first cell's result.
+
+### Inline Variant Sub-Grids
+MeshVariants editing uses a second AG Grid instance embedded as a full-width row that appears when the user clicks the ▶ toggle next to a species row name. The variant mini-grid has its own column headers and cell editors. Data is synced back to the parent row's `MeshVariants` field on every cell change. If the sub-grid is recreated (e.g. due to row height recalculation), the mini-grid is rebuilt from the current variant array stored in `node.data._variants`, so no state is lost.
+
+### Multi-File Editing
+When multiple files are open in the grid simultaneously, each row stores a `_file` property pointing to its owning filename, and a composite `_gid` key of `filename:::rowKey` to avoid ID collisions. The snapshot function (which runs before save or file switch) flushes all open variant mini-grids back to their parent rows, then syncs all rows back to their respective file registries. Dirty-state tracking works per-file, so each file can be independently saved or reverted.
 
 ### CSV Serialization
 Papa Parse is used only for parsing. Serialization is done manually to match UE's exact quoting format: `origHeaders.join(',')` for the header line (no quotes); first column unquoted then `'"' + value + '"'` for all remaining columns.
