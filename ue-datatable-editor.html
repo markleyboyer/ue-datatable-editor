@@ -66,6 +66,8 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; b
 .fp-active:hover { background: #244070; }
 .fp-name { flex: 1; font-size: 11px; color: #c0d8f0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .fp-dirty { color: #fbbf24 !important; }
+.fp-ren-btn { background: none; border: none; color: #5a7a9a; cursor: pointer; font-size: 11px; padding: 0 2px; flex-shrink: 0; line-height: 1; }
+.fp-ren-btn:hover { color: #90b8e8; }
 .fp-dup-btn { background: none; border: none; color: #5a7a9a; cursor: pointer; font-size: 13px; padding: 0 2px; flex-shrink: 0; line-height: 1; }
 .fp-dup-btn:hover { color: #90b8e8; }
 .fp-close-btn { background: none; border: none; color: #4a3a3a; cursor: pointer; font-size: 12px; padding: 0 2px; flex-shrink: 0; line-height: 1; }
@@ -1793,6 +1795,37 @@ async function closeFile(name) {
   }
 }
 
+function renameFile(name) {
+  const rec = fileRegistry.get(name);
+  if (!rec) return;
+
+  const displayName = name.replace(/\.csv$/i, '');
+  const newDisplayName = prompt(`Rename "${displayName}" to:`, displayName);
+  if (!newDisplayName || newDisplayName.trim() === '') return; // user cancelled or empty
+
+  const newName = newDisplayName.trim() + '.csv';
+  if (newName === name) return; // no change
+  if (fileRegistry.has(newName)) { setStatus('File already exists: ' + newName); return; }
+
+  // Update registry
+  fileRegistry.set(newName, rec);
+  fileRegistry.delete(name);
+
+  // Update gridFiles if this file is currently open
+  const gridIdx = gridFiles.indexOf(name);
+  if (gridIdx >= 0) {
+    gridFiles[gridIdx] = newName;
+    if (activeFileName === name) activeFileName = newName;
+  }
+
+  // Refresh grid header and file panel
+  if (gridIdx >= 0) {
+    document.getElementById('file-name').textContent = gridFiles.length === 1 ? newName : `${gridFiles.length} files`;
+  }
+  renderFilePanel();
+  setStatus('Renamed to: ' + newName);
+}
+
 function duplicateFile(name) {
   const rec = fileRegistry.get(name);
   if (!rec) return;
@@ -1830,6 +1863,7 @@ function renderFilePanel() {
     const cls      = isActive ? ' fp-active' : isInGrid ? ' fp-in-grid' : '';
     return `<div class="fp-entry${cls}" title="Click to open · Shift-click to add/remove from multi-view" onclick="handleFilePanelClick(event,${sq(rec.name)})">
       ${swatch}<span class="fp-name${dirty ? ' fp-dirty' : ''}">${esc(rec.name.replace(/\.csv$/i, ''))}${dirty ? ' *' : ''}</span>
+      <button class="fp-ren-btn" title="Rename" onclick="event.stopPropagation();renameFile(${sq(rec.name)})">✎</button>
       <button class="fp-dup-btn" title="Duplicate" onclick="event.stopPropagation();duplicateFile(${sq(rec.name)})">⎘</button>
       <button class="fp-close-btn" title="Close" onclick="event.stopPropagation();closeFile(${sq(rec.name)})">✕</button>
     </div>`;
