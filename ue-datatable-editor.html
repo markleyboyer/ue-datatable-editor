@@ -84,6 +84,12 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; b
 .grid-file-label-row .ag-cell { border: none !important; }
 .grid-label-row-cell { padding: 0 10px; color: #3a5a80; font-size: 10px; font-style: italic; display: flex; align-items: center; gap: 6px; height: 100%; border-top: 1px solid #122040; }
 
+/* ── Inline mesh variant rows ── */
+.variant-expand-btn { background:none; border:none; color:#3a6aaa; cursor:pointer; padding:0 3px; font-size:10px; line-height:1; opacity:0.7; flex-shrink:0; }
+.variant-expand-btn:hover { color:#7EC8F8; opacity:1; }
+.variant-inline-wrap { width:100%; height:100%; background:#050d1a; display:flex; flex-direction:column; padding:0 8px 4px 28px; box-sizing:border-box; border-bottom:2px solid #0e2040; }
+.variant-inline-footer { display:flex; gap:6px; padding:4px 4px 0; }
+
 /* ── Dirty-save confirm ── */
 #fp-confirm { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.65); z-index: 200; align-items: center; justify-content: center; }
 #fp-confirm-box { background: #16213e; border: 1px solid #3a6aaa; border-radius: 8px; padding: 22px 24px; max-width: 380px; width: 90vw; box-shadow: 0 8px 40px rgba(0,0,0,0.6); }
@@ -247,6 +253,8 @@ let activeFileName = null;
 let isDirty        = false;
 let _fpConfirmResolve = null;
 let gridFiles      = []; // ordered filenames currently shown in the grid
+const expandedVariantKeys = new Set(); // parentKey of expanded species rows
+const variantMiniGrids    = new Map(); // parentKey → mini AG Grid api for inline variants
 
 // Cell selection
 const selectedCells = new Set();  // "rowId||field"
@@ -438,12 +446,9 @@ function applySelHighlights() {
 }
 
 function handleCellClick(params) {
-  if (params.data._isLabel) return;
+  if (params.data._isLabel || params.data._isVariant) return;
   const { node, column, event } = params;
   const field = column.getColId();
-
-  // MeshVariants opens its own modal
-  if (field === 'MeshVariants') { openModal(node); return; }
 
   const key = cellKey(node.id, field);
 
@@ -456,7 +461,7 @@ function handleCellClick(params) {
   } else if (event.shiftKey && anchorCell && anchorCell.field === field) {
     // Extend range within the same column from anchor to here
     const allNodes = [];
-    params.api.forEachNodeAfterFilterAndSort(n => { if (!n.data._isLabel) allNodes.push(n); });
+    params.api.forEachNodeAfterFilterAndSort(n => { if (!n.data._isLabel && !n.data._isVariant) allNodes.push(n); });
     const ai = allNodes.findIndex(n => n.id === anchorCell.rowId);
     const ci = allNodes.findIndex(n => n.id === node.id);
     const [lo, hi] = [Math.min(ai, ci), Math.max(ai, ci)];
@@ -741,28 +746,50 @@ function buildColDefs(type, headers) {
     }
   };
 
-  if (type === 'species') return [
-    keyCol,
-    { field: 'StemsPerHectare',    headerName: 'Stems/ha',       editable: true, width: 90,  type: 'numericColumn' },
-    { field: 'DispersionType',     headerName: 'Dispersion',     editable: true, width: 110,
-      cellEditor: 'agSelectCellEditor', cellEditorParams: { values: DISPERSION_TYPES } },
-    { field: 'TargetRIndex',       headerName: 'Target R',       editable: true, width: 85,  type: 'numericColumn' },
-    { field: 'DispersionScale',    headerName: 'Disp Scale',     editable: true, width: 90,  type: 'numericColumn' },
-    { field: 'DispersionWarpStrength', headerName: 'Warp Str',   editable: true, width: 90,  type: 'numericColumn' },
-    { field: 'DispersionSeed',     headerName: 'Disp Seed',      editable: true, width: 85,  type: 'numericColumn' },
-    { field: 'SlopeRange',         headerName: 'Slope',     editable: true, width: 110, cellRenderer: rangeRenderer },
-    { field: 'AspectRange',        headerName: 'Aspect',    editable: true, width: 110, cellRenderer: rangeRenderer },
-    { field: 'WetnessRange',       headerName: 'Wetness',   editable: true, width: 110, cellRenderer: rangeRenderer },
-    { field: 'MicroTopoRange',     headerName: 'MicroTopo', editable: true, width: 110, cellRenderer: rangeRenderer },
-    { field: 'SeedlingAgeWeight',  headerName: 'Seedling',  editable: true, width: 82,  type: 'numericColumn' },
-    { field: 'SaplingAgeWeight',   headerName: 'Sapling',   editable: true, width: 82,  type: 'numericColumn' },
-    { field: 'MatureAgeWeight',    headerName: 'Mature',    editable: true, width: 82,  type: 'numericColumn' },
-    { field: 'DeadAgeWeight',      headerName: 'Dead',      editable: true, width: 82,  type: 'numericColumn' },
-    { field: 'Collision',          headerName: 'Collision', editable: true, width: 90,
-      cellEditor: 'agSelectCellEditor', cellEditorParams: { values: ['True', 'False'] } },
-    { field: 'MeshVariants', headerName: 'Mesh Variants', editable: false, width: 130, cellRenderer: variantRenderer },
-    delCol
-  ];
+  if (type === 'species') {
+    const speciesKeyCol = {
+      field: '_key', headerName: headers[0],
+      editable: true, pinned: 'left', width: 160,
+      cellRenderer(params) {
+        const k = params.data._gid || params.data._key;
+        const wrap = document.createElement('div');
+        wrap.style.cssText = 'display:flex;align-items:center;gap:4px;width:100%;height:100%;';
+        const name = document.createElement('span');
+        name.textContent = params.value || '';
+        name.style.cssText = 'font-weight:600;color:#c0d8f8;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;';
+        wrap.appendChild(name);
+        const btn = document.createElement('button');
+        btn.className = 'variant-expand-btn';
+        btn.textContent = expandedVariantKeys.has(k) ? '▼' : '▶';
+        btn.title = 'Show/hide mesh variants';
+        btn.addEventListener('click', e => { e.stopPropagation(); toggleVariantExpand(params.node); });
+        wrap.appendChild(btn);
+        return wrap;
+      }
+    };
+    return [
+      speciesKeyCol,
+      { field: 'StemsPerHectare',    headerName: 'Stems/ha',       editable: true, width: 90,  type: 'numericColumn' },
+      { field: 'DispersionType',     headerName: 'Dispersion',     editable: true, width: 110,
+        cellEditor: 'agSelectCellEditor', cellEditorParams: { values: DISPERSION_TYPES } },
+      { field: 'TargetRIndex',       headerName: 'Target R',       editable: true, width: 85,  type: 'numericColumn' },
+      { field: 'DispersionScale',    headerName: 'Disp Scale',     editable: true, width: 90,  type: 'numericColumn' },
+      { field: 'DispersionWarpStrength', headerName: 'Warp Str',   editable: true, width: 90,  type: 'numericColumn' },
+      { field: 'DispersionSeed',     headerName: 'Disp Seed',      editable: true, width: 85,  type: 'numericColumn' },
+      { field: 'SlopeRange',         headerName: 'Slope',     editable: true, width: 110, cellRenderer: rangeRenderer },
+      { field: 'AspectRange',        headerName: 'Aspect',    editable: true, width: 110, cellRenderer: rangeRenderer },
+      { field: 'WetnessRange',       headerName: 'Wetness',   editable: true, width: 110, cellRenderer: rangeRenderer },
+      { field: 'MicroTopoRange',     headerName: 'MicroTopo', editable: true, width: 110, cellRenderer: rangeRenderer },
+      { field: 'SeedlingAgeWeight',  headerName: 'Seedling',  editable: true, width: 82,  type: 'numericColumn' },
+      { field: 'SaplingAgeWeight',   headerName: 'Sapling',   editable: true, width: 82,  type: 'numericColumn' },
+      { field: 'MatureAgeWeight',    headerName: 'Mature',    editable: true, width: 82,  type: 'numericColumn' },
+      { field: 'DeadAgeWeight',      headerName: 'Dead',      editable: true, width: 82,  type: 'numericColumn' },
+      { field: 'Collision',          headerName: 'Collision', editable: true, width: 90,
+        cellEditor: 'agSelectCellEditor', cellEditorParams: { values: ['True', 'False'] } },
+      { field: 'MeshVariants', headerName: 'Mesh Variants', editable: false, width: 130, cellRenderer: variantRenderer },
+      delCol
+    ];
+  }
 
   if (type === 'ecosystem') return [
     keyCol,
@@ -815,6 +842,9 @@ function serializeCSV(rows, headers) {
 // GRID INIT
 // ═══════════════════════════════════════════════════════
 function initGrid(rows, defs) {
+  variantMiniGrids.forEach(api => { try { api.destroy(); } catch(e) {} });
+  variantMiniGrids.clear();
+  expandedVariantKeys.clear();
   if (gridApi) { gridApi.destroy(); gridApi = null; }
   clearSel();
 
@@ -827,11 +857,23 @@ function initGrid(rows, defs) {
     getRowId:    p => p.data._gid || p.data._key,
     getRowClass: p => p.data._isLabel ? 'grid-file-label-row' : '',
 
-    isFullWidthRow: p => !!p.rowNode.data._isLabel,
+    isFullWidthRow: p => !!p.rowNode.data._isLabel || !!p.rowNode.data._isVariant,
     fullWidthCellRenderer: params => {
-      const color = params.data._labelColor || '#3a5a80';
-      const text  = esc(params.data._labelText || '');
-      return `<div class="grid-label-row-cell"><span class="fp-swatch" style="background:${color}"></span>${text}</div>`;
+      if (params.data._isVariant) return buildVariantRowElement(params);
+      const div = document.createElement('div');
+      div.className = 'grid-label-row-cell';
+      const swatch = document.createElement('span');
+      swatch.className = 'fp-swatch';
+      swatch.style.background = params.data._labelColor || '#3a5a80';
+      div.appendChild(swatch);
+      div.appendChild(document.createTextNode(params.data._labelText || ''));
+      return div;
+    },
+    getRowHeight: params => {
+      if (params.data?._isVariant) {
+        const n = params.data._variants?.length ?? 0;
+        return 28 + n * 52 + 36;
+      }
     },
 
     onCellClicked: handleCellClick,
@@ -874,6 +916,168 @@ function initGrid(rows, defs) {
 }
 
 // ═══════════════════════════════════════════════════════
+// INLINE MESH VARIANT ROWS
+// ═══════════════════════════════════════════════════════
+function toggleVariantExpand(node) {
+  const k = node.data._gid || node.data._key;
+  if (expandedVariantKeys.has(k)) {
+    collapseVariantsForKey(k);
+  } else {
+    const variants = parseMeshVariants(node.data.MeshVariants || '');
+    const variantRow = {
+      _isVariant: true,
+      _parentKey:  k,
+      _variants:   variants,
+      _key:  k + ':::variants',
+      _gid:  k + ':::variants',
+      _file: node.data._file,
+    };
+    gridApi.applyTransaction({ add: [variantRow], addIndex: node.rowIndex + 1 });
+    expandedVariantKeys.add(k);
+    gridApi.refreshCells({ rowNodes: [node], columns: ['_key'], force: true });
+  }
+}
+
+function collapseVariantsForKey(parentKey) {
+  const variantNode = gridApi?.getRowNode(parentKey + ':::variants');
+  if (variantNode) gridApi.applyTransaction({ remove: [variantNode.data] });
+  const miniApi = variantMiniGrids.get(parentKey);
+  if (miniApi) { try { miniApi.destroy(); } catch(e) {} variantMiniGrids.delete(parentKey); }
+  expandedVariantKeys.delete(parentKey);
+  const parentNode = gridApi?.getRowNode(parentKey);
+  if (parentNode) gridApi.refreshCells({ rowNodes: [parentNode], columns: ['_key'], force: true });
+}
+
+function buildVariantRowElement(params) {
+  const parentKey = params.data._parentKey;
+
+  const wrap = document.createElement('div');
+  wrap.className = 'variant-inline-wrap';
+
+  const gridDiv = document.createElement('div');
+  gridDiv.className = 'ag-theme-alpine-dark';
+  gridDiv.style.height = (28 + (params.data._variants?.length ?? 0) * 52) + 'px';
+  wrap.appendChild(gridDiv);
+
+  const footer = document.createElement('div');
+  footer.className = 'variant-inline-footer';
+  const addBtn = document.createElement('button');
+  addBtn.className = 'btn';
+  addBtn.textContent = '+ Add Variant';
+  footer.appendChild(addBtn);
+  wrap.appendChild(footer);
+
+  // Destroy any stale mini-grid for this parent (e.g. after resetRowHeights recreates the cell)
+  const oldApi = variantMiniGrids.get(parentKey);
+  if (oldApi) { try { oldApi.destroy(); } catch(e) {} variantMiniGrids.delete(parentKey); }
+
+  function syncToParent() {
+    const mapi = variantMiniGrids.get(parentKey);
+    if (!mapi) return;
+    const variants = [];
+    mapi.forEachNode(n => variants.push(n.data));
+    params.data._variants = variants;
+    const parentNode = gridApi?.getRowNode(parentKey);
+    if (parentNode) {
+      parentNode.data.MeshVariants = serializeMeshVariants(variants);
+      gridApi.refreshCells({ rowNodes: [parentNode], columns: ['MeshVariants'], force: true });
+      const dfile = parentNode.data._file;
+      if (dfile && dfile !== activeFileName) {
+        const rec = fileRegistry.get(dfile); if (rec) { rec.dirty = true; renderFilePanel(); }
+      } else markDirty();
+    }
+  }
+
+  function updateHeight() {
+    const n = params.data._variants?.length ?? 0;
+    gridDiv.style.height = (28 + n * 52) + 'px';
+    const variantNode = gridApi?.getRowNode(params.data._gid || params.data._key);
+    if (variantNode) gridApi.resetRowHeights();
+  }
+
+  const colDefs = [
+    { colId: '_thumb', headerName: '', width: 56, editable: false, sortable: false, resizable: false, suppressMenu: true,
+      cellRenderer(p) {
+        const w = document.createElement('div');
+        w.style.cssText = 'display:flex;align-items:center;justify-content:center;height:100%;';
+        const url = thumbCache[getMeshName(p.data?.Mesh || '')];
+        if (url) {
+          const img = document.createElement('img');
+          img.style.cssText = 'max-height:44px;max-width:50px;object-fit:contain;cursor:zoom-in;';
+          img.src = url;
+          const popup = document.getElementById('thumb-popup');
+          img.addEventListener('mouseenter', () => { popup.innerHTML = `<img src="${url}">`; popup.style.display = 'block'; });
+          img.addEventListener('mousemove', e => {
+            const pw = 452, ph = 452, pad = 14;
+            popup.style.left = (e.clientX + pad + pw > window.innerWidth ? e.clientX - pw - pad : e.clientX + pad) + 'px';
+            popup.style.top  = (e.clientY + pad + ph > window.innerHeight ? e.clientY - ph - pad : e.clientY + pad) + 'px';
+          });
+          img.addEventListener('mouseleave', () => { popup.style.display = 'none'; });
+          w.appendChild(img);
+        }
+        return w;
+      }
+    },
+    { field: 'Mesh',            headerName: 'Mesh Asset Path', editable: true, flex: 1, minWidth: 180 },
+    { field: 'Age Class',       headerName: 'Age Class',   editable: true, width: 110,
+      cellEditor: 'agSelectCellEditor', cellEditorParams: { values: AGE_CLASSES } },
+    { field: 'AgeClassWeight',  headerName: 'Age Wt',      editable: true, width: 80,  type: 'numericColumn' },
+    { field: '_scaleX',         headerName: 'Scale Min',   editable: true, width: 90,  type: 'numericColumn' },
+    { field: '_scaleY',         headerName: 'Scale Max',   editable: true, width: 90,  type: 'numericColumn' },
+    { field: 'AlignToSurface',  headerName: 'Align',       editable: true, width: 72,  type: 'numericColumn' },
+    { field: 'ZPositionOffset', headerName: 'Z Offset',    editable: true, width: 80,  type: 'numericColumn' },
+    { field: '_del', headerName: '', width: 40, editable: false, sortable: false, resizable: false, suppressMenu: true,
+      cellRenderer(p) {
+        const btn = document.createElement('button');
+        btn.textContent = '✕';
+        btn.title = 'Remove variant';
+        btn.style.cssText = 'background:none;border:none;color:#cc5555;cursor:pointer;font-size:14px;padding:0;width:100%;line-height:1;';
+        btn.onclick = () => {
+          const mapi = variantMiniGrids.get(parentKey);
+          if (!mapi) return;
+          mapi.applyTransaction({ remove: [p.data] });
+          syncToParent();
+          updateHeight();
+        };
+        return btn;
+      }
+    },
+  ];
+
+  const miniApi = agGrid.createGrid(gridDiv, {
+    columnDefs: colDefs,
+    rowData: [...(params.data._variants || [])],
+    rowHeight: 52,
+    headerHeight: 28,
+    suppressRowClickSelection: true,
+    animateRows: false,
+    defaultColDef: { resizable: true, sortable: false },
+    onCellValueChanged(p) {
+      const f = p.column.getColId();
+      let v = p.newValue;
+      if (FLOAT_FIELDS.has(f) && /^-?\d+$/.test(String(v ?? '').trim())) {
+        v = parseFloat(v).toFixed(6);
+        p.node.data[f] = v;
+        p.api.refreshCells({ rowNodes: [p.node], columns: [f], force: true });
+      }
+      syncToParent();
+    },
+  });
+  variantMiniGrids.set(parentKey, miniApi);
+
+  addBtn.onclick = () => {
+    miniApi.applyTransaction({ add: [{
+      Mesh: '', 'Age Class': 'Mature', AgeClassWeight: '1.000000',
+      _scaleX: '0.800000', _scaleY: '1.200000', AlignToSurface: '0.500000', ZPositionOffset: '0.000000'
+    }]});
+    syncToParent();
+    updateHeight();
+  };
+
+  return wrap;
+}
+
+// ═══════════════════════════════════════════════════════
 // CHARTS
 // ═══════════════════════════════════════════════════════
 const chartBase = {
@@ -891,7 +1095,7 @@ const chartBase = {
 function updateCharts() {
   if (!gridApi || !tableType) return;
   const rows = [];
-  gridApi.forEachNode(n => { if (!n.data._isLabel) rows.push(n.data); });
+  gridApi.forEachNode(n => { if (!n.data._isLabel && !n.data._isVariant) rows.push(n.data); });
   const labels = rows.map(r => r._key);
 
   if (tableType === 'species') {
@@ -1423,9 +1627,18 @@ function askSaveConfirm(filename) {
 // Snapshot live grid rows back to each file's registry entry.
 function snapshotAllFiles() {
   if (!gridApi) return;
+  // Flush any open inline variant grids back to their parent rows first
+  variantMiniGrids.forEach((miniApi, parentKey) => {
+    const variants = [];
+    miniApi.forEachNode(n => variants.push(n.data));
+    const parentNode = gridApi.getRowNode(parentKey);
+    if (parentNode && !parentNode.data._isLabel) {
+      parentNode.data.MeshVariants = serializeMeshVariants(variants);
+    }
+  });
   const byFile = new Map();
   gridApi.forEachNode(node => {
-    if (node.data._isLabel) return;
+    if (node.data._isLabel || node.data._isVariant) return;
     const fname = node.data._file || activeFileName;
     if (!fname) return;
     if (!byFile.has(fname)) byFile.set(fname, []);
