@@ -204,6 +204,11 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; b
           <input id="dispersion-scale" type="range" min="0" max="9" value="4" step="1" style="flex:1;accent-color:#5a9ae0;">
           <span id="dispersion-scale-label" style="font-size:11px;color:#90b8e8;min-width:64px;text-align:right;font-variant-numeric:tabular-nums;">100 m</span>
         </div>
+        <div id="dispersion-dotsize-row" style="display:flex;align-items:center;gap:8px;padding:0 0 6px;">
+          <label style="font-size:10px;color:#7a9abf;text-transform:uppercase;letter-spacing:0.5px;">Dot</label>
+          <input id="dispersion-dot-size" type="range" min="20" max="250" value="100" step="5" style="flex:1;accent-color:#5a9ae0;">
+          <span id="dispersion-dot-size-label" style="font-size:11px;color:#90b8e8;min-width:64px;text-align:right;font-variant-numeric:tabular-nums;">100%</span>
+        </div>
         <canvas id="dispersion-canvas" height="200" style="border:1px solid #0f3460;border-radius:4px;background:#0a1422;display:block;"></canvas>
         <div id="dispersion-info" style="padding:8px 4px 0;font-size:11px;color:#7a9abf;text-align:center;line-height:1.5;"></div>
       </div>
@@ -696,6 +701,14 @@ document.addEventListener('DOMContentLoaded', () => {
     const idx = Math.max(0, Math.min(DISP_SCALE_STEPS_M.length - 1, +dispScaleEl.value | 0));
     dispGridSizeM = DISP_SCALE_STEPS_M[idx];
     dispScaleLbl.textContent = fmtMeters(dispGridSizeM);
+    refreshDispersionIfActive();
+  });
+
+  const dispDotEl  = document.getElementById('dispersion-dot-size');
+  const dispDotLbl = document.getElementById('dispersion-dot-size-label');
+  dispDotEl.addEventListener('input', () => {
+    dispDotSizeMul = (+dispDotEl.value || 100) / 100;
+    dispDotLbl.textContent = `${+dispDotEl.value}%`;
     refreshDispersionIfActive();
   });
 });
@@ -1903,7 +1916,8 @@ let dispCurrentRowIds = [];
 
 // Slider step → grid edge length in meters. Index 4 (100m) is the default.
 const DISP_SCALE_STEPS_M = [5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000];
-let dispGridSizeM = 100;
+let dispGridSizeM   = 100;
+let dispDotSizeMul  = 1.0;  // user-adjustable dot-size multiplier (0.2-2.5)
 
 const PATTERN_COLORS = [
   '#7ec8f8', '#f08c4a', '#5acc8a', '#a78bfa',
@@ -2078,130 +2092,155 @@ function ueValueNoise2D(px, py, freq, speciesSeed, subSeed, offX, offY) {
 // Generate a dispersion pattern as N points in [0,1]² based on UE field values.
 // `gridSizeM` is the real-world edge length the unit square represents.
 //
-// This is a port of UE's `PCG_DispersionNoise` HLSL: a dense candidate grid is
-// built in metres, each candidate is domain-warped and scored by the per-type
-// dispNoise formula, then the top-N by `(noise − rand)` survive — matching
-// UE's downstream `noise > rand` filter while guaranteeing exactly `count`
-// points for visualisation.
+// Uses UE's *parameter semantics* (cluster spacing = dispersionScale in metres,
+// sigma scales with R, jittered grid for cluster/cell centres, bilinear-value-
+// noise domain warp), but places `count` points *directly* in clusters rather
+// than via a noise-mask filter. UE's filter approach is mathematically correct
+// but at typical visualisation densities (~100s of points) produces too few
+// candidates per cluster to read as clumpy. Direct placement gives visible
+// clumping at any density while keeping UE's cluster structure intact.
 function generateDispersionPoints(type, targetR, scale, warp, seed, count, gridSizeM) {
   const N = Math.max(0, count | 0);
   if (N === 0) return [];
 
-  const G          = (gridSizeM > 0) ? gridSizeM : 100;     // metres per unit-square edge
-  const areaSqM    = G * G;
-  const areaHa     = areaSqM / 10000;
+  const G       = (gridSizeM > 0) ? gridSizeM : 100;
+  const areaHa  = (G * G) / 10000;
+
+  // UE Clark-Evans inverse — fallback spacing when dispersionScale = 0
   const stemsPerHa = N / Math.max(areaHa, 1e-9);
+  const rho        = Math.max(stemsPerHa / 10000, 1e-7);
+  const rMin       = Math.max(0.01, (targetR || 0) / (2 * Math.sqrt(rho)));
 
-  // UE Clark-Evans inverse — fallback spacing when dispersionScale = 0.
-  const rho  = Math.max(stemsPerHa / 10000, 1e-7);
-  const rMin = Math.max(0.01, (targetR || 0) / (2 * Math.sqrt(rho)));
+  // Deterministic RNG for offspring jitter (seeded by DispersionSeed)
+  const sp  = (seed | 0) >>> 0;
+  const rng = seededRng(sp || 1);
 
-  // Candidate grid: oversample so the noise mask is well-resolved, capped for
-  // performance. At a 100 m grid this gives ~0.6 m candidate spacing.
-  const MAX_CANDS = 15000;
-  const idealN    = Math.min(MAX_CANDS, Math.max(N * 6, 2000));
-  const cSpacing  = Math.sqrt(areaSqM / idealN);
-  const cols      = Math.ceil(G / cSpacing);
-  const rows      = Math.ceil(G / cSpacing);
+  let pts = [];
 
-  const sp       = (seed | 0) >>> 0;
-  const useWarp  = warp > 0;
-  const refWarp  = scale > 0 ? scale : Math.max(rMin * 3.5, cSpacing * 4);
-  const warpFreq = 1 / (Math.max(refWarp, 0.001) * 2);
+  if (type === 'Clumping') {
+    // UE: clusters live on jittered grid with spacing = dispersionScale.
+    // sigma = clusterSpacing × (0.10 + saturate(R) × 0.24) — wider at high R.
+    const clusterSp = scale > 0 ? scale : Math.max(rMin * 3.5, 2);
+    const sigFrac   = 0.10 + Math.min(1, Math.max(0, targetR || 0)) * 0.24;
+    const sigma     = clusterSp * sigFrac;
 
-  // Per-type derived constants
-  const isClump   = (type === 'Clumping');
-  const isRand    = (type === 'Random' || type === 'Poisson');
-  const isUni     = (type === 'Uniform');
-  const clusterSp = scale > 0 ? Math.max(scale, cSpacing * 2) : Math.max(rMin * 3.5, cSpacing * 6);
-  const sigFrac   = 0.10 + Math.min(1, Math.max(0, targetR || 0)) * 0.24;
-  const sigma     = clusterSp * sigFrac;
-  const randCell  = scale > 0 ? Math.max(scale, cSpacing)     : Math.max(rMin, cSpacing);
-  const uniGrid   = scale > 0 ? Math.max(scale, cSpacing * 2) : Math.max(rMin, cSpacing * 2);
-  const jitterAmt = Math.min(1, Math.max(0, 1 - ((targetR || 0) - 1) / 1.15)) * 0.15;
-  const radFrac   = 0.45 - Math.min(1, Math.max(0, ((targetR || 0) - 1) / 1.15)) * 0.30;
-  const radius    = uniGrid * radFrac;
-  const sharpness = 1 + Math.min(1, Math.max(0, ((targetR || 0) - 1) / 1.15)) * 8;
+    const cols  = Math.max(1, Math.ceil(G / clusterSp));
+    const rows  = Math.max(1, Math.ceil(G / clusterSp));
+    const total = cols * rows;
 
-  // Build candidates, score by (noise − rand) so top-N matches UE's filter
-  const cands = new Float64Array(cols * rows * 3); // [x_norm, y_norm, score]
-  let ci = 0;
-
-  for (let yi = 0; yi < rows; yi++) {
-    for (let xi = 0; xi < cols; xi++) {
-      const cx = (xi + 0.5) * cSpacing;
-      const cy = (yi + 0.5) * cSpacing;
-      if (cx > G || cy > G) continue;
-
-      // Domain warp (in metres)
-      let wx = cx, wy = cy;
-      if (useWarp) {
-        const wX = ueValueNoise2D(cx, cy, warpFreq, sp, 1234567, 0,    13.71) * 2 - 1;
-        const wY = ueValueNoise2D(cx, cy, warpFreq, sp, 7654321, 31.41, 57.23) * 2 - 1;
-        wx = cx + wX * warp;
-        wy = cy + wY * warp;
+    // Pre-compute jittered cluster centres (deterministic from species seed)
+    const centres = new Float64Array(total * 2);
+    for (let yi = 0; yi < rows; yi++) {
+      for (let xi = 0; xi < cols; xi++) {
+        const h  = ueHash(ueHash(xi + 32768, yi + 32768), sp);
+        const jx = ueFRand(h)     - 0.5;
+        const jy = ueFRand(h ^ 1) - 0.5;
+        const i2 = (yi * cols + xi) * 2;
+        centres[i2]     = (xi + jx) * clusterSp;
+        centres[i2 + 1] = (yi + jy) * clusterSp;
       }
+    }
 
-      // Compute dispNoise per UE formulas
-      let noise = 0.5;
-      if (isClump) {
-        const cbx = Math.floor(wx / clusterSp);
-        const cby = Math.floor(wy / clusterSp);
-        let minD2 = 1e18;
-        for (let dy = -1; dy <= 1; dy++) {
-          for (let dx = -1; dx <= 1; dx++) {
-            const ix = cbx + dx, iy = cby + dy;
-            const h  = ueHash(ueHash(ix + 32768, iy + 32768), sp);
-            const jx = ueFRand(h)     - 0.5;
-            const jy = ueFRand(h ^ 1) - 0.5;
-            const ccx = (ix + jx) * clusterSp;
-            const ccy = (iy + jy) * clusterSp;
-            const dxc = wx - ccx, dyc = wy - ccy;
-            const d2  = dxc * dxc + dyc * dyc;
-            if (d2 < minD2) minD2 = d2;
-          }
+    // Distribute count points across cluster cells (uniformly random)
+    for (let i = 0; i < N; i++) {
+      const ci = Math.min(total - 1, (rng() * total) | 0);
+      const cx = centres[ci * 2];
+      const cy = centres[ci * 2 + 1];
+      const dx = gaussian(rng) * sigma;
+      const dy = gaussian(rng) * sigma;
+      pts.push([cx + dx, cy + dy]);
+    }
+
+  } else if (type === 'Random' || type === 'Poisson') {
+    // UE: cell-based random density. At small cell sizes it reads as uniform
+    // random; at larger cell sizes it produces visible high/low-density patches.
+    const cell = scale > 0 ? scale : Math.max(rMin, 1);
+    const cols = Math.max(1, Math.ceil(G / cell));
+    const rows = Math.max(1, Math.ceil(G / cell));
+
+    if (cell < 2 || cols * rows > 1000) {
+      // Cells too small to be visually distinct — generate uniform random
+      for (let i = 0; i < N; i++) pts.push([rng() * G, rng() * G]);
+    } else {
+      // Patchy: each cell has random weight; distribute points proportionally
+      const total = cols * rows;
+      const weights = new Float64Array(total);
+      let totalW = 0;
+      for (let yi = 0; yi < rows; yi++) {
+        for (let xi = 0; xi < cols; xi++) {
+          const w = ueFRand(ueHash(ueHash(xi + 32768, yi + 32768), sp));
+          weights[yi * cols + xi] = w;
+          totalW += w;
         }
-        const e = Math.sqrt(minD2) / Math.max(sigma, 0.001);
-        noise = Math.exp(-0.5 * e * e);
-
-      } else if (isRand) {
-        const ix = Math.floor(wx / randCell);
-        const iy = Math.floor(wy / randCell);
-        noise = ueFRand(ueHash(ueHash(ix + 32768, iy + 32768), sp));
-
-      } else if (isUni) {
-        const cbx = Math.floor(wx / uniGrid);
-        const cby = Math.floor(wy / uniGrid);
-        let minD2 = 1e18;
-        for (let dy = -1; dy <= 1; dy++) {
-          for (let dx = -1; dx <= 1; dx++) {
-            const ix = cbx + dx, iy = cby + dy;
-            const h  = ueHash(ueHash(ix + 32768, iy + 32768), sp);
-            const jx = (ueFRand(h)     - 0.5) * jitterAmt;
-            const jy = (ueFRand(h ^ 1) - 0.5) * jitterAmt;
-            const ccx = (ix + 0.5 + jx) * uniGrid;
-            const ccy = (iy + 0.5 + jy) * uniGrid;
-            const dxc = wx - ccx, dyc = wy - ccy;
-            const d2  = dxc * dxc + dyc * dyc;
-            if (d2 < minD2) minD2 = d2;
-          }
-        }
-        const t = Math.min(1, Math.max(0, 1 - Math.sqrt(minD2) / Math.max(radius, 0.001)));
-        noise   = Math.pow(t, sharpness);
       }
+      // Build CDF for proportional sampling
+      const cdf = new Float64Array(total);
+      let acc = 0;
+      for (let i = 0; i < total; i++) { acc += weights[i] / totalW; cdf[i] = acc; }
+      for (let i = 0; i < N; i++) {
+        const u  = rng();
+        // Binary search CDF
+        let lo = 0, hi = total - 1;
+        while (lo < hi) { const m = (lo + hi) >> 1; if (cdf[m] < u) lo = m + 1; else hi = m; }
+        const yi = (lo / cols) | 0;
+        const xi = lo - yi * cols;
+        pts.push([(xi + rng()) * cell, (yi + rng()) * cell]);
+      }
+    }
 
-      const r = ueFRand(ueHash(ueHash(xi + 1024, yi + 1024), sp));
-      cands[ci++] = cx / G;
-      cands[ci++] = cy / G;
-      cands[ci++] = noise - r;
+  } else if (type === 'Uniform') {
+    // UE: jittered grid of pointy kernels; jitter and sharpness from R.
+    const uniGrid   = scale > 0 ? scale : Math.max(rMin, 2);
+    const jitterAmt = Math.min(1, Math.max(0, 1 - ((targetR || 0) - 1) / 1.15)) * 0.15;
+    const radFrac   = 0.45 - Math.min(1, Math.max(0, ((targetR || 0) - 1) / 1.15)) * 0.30;
+    const radius    = uniGrid * radFrac;
+    const sharpness = 1 + Math.min(1, Math.max(0, ((targetR || 0) - 1) / 1.15)) * 8;
+    // Offspring spread: shrinks as sharpness grows so high-R produces tight dots
+    const offSigma  = radius * 0.45 / Math.max(1, sharpness);
+
+    const cols  = Math.max(1, Math.ceil(G / uniGrid));
+    const rows  = Math.max(1, Math.ceil(G / uniGrid));
+    const total = cols * rows;
+
+    // Pre-compute jittered cell centres
+    const centres = new Float64Array(total * 2);
+    for (let yi = 0; yi < rows; yi++) {
+      for (let xi = 0; xi < cols; xi++) {
+        const h  = ueHash(ueHash(xi + 32768, yi + 32768), sp);
+        const jx = (ueFRand(h)     - 0.5) * jitterAmt;
+        const jy = (ueFRand(h ^ 1) - 0.5) * jitterAmt;
+        const i2 = (yi * cols + xi) * 2;
+        centres[i2]     = (xi + 0.5 + jx) * uniGrid;
+        centres[i2 + 1] = (yi + 0.5 + jy) * uniGrid;
+      }
+    }
+
+    for (let i = 0; i < N; i++) {
+      const ci = Math.min(total - 1, (rng() * total) | 0);
+      const cx = centres[ci * 2];
+      const cy = centres[ci * 2 + 1];
+      const dx = gaussian(rng) * offSigma;
+      const dy = gaussian(rng) * offSigma;
+      pts.push([cx + dx, cy + dy]);
     }
   }
 
-  // Pack into objects, sort by score desc, keep top N
-  const triples = [];
-  for (let i = 0; i < ci; i += 3) triples.push([cands[i], cands[i + 1], cands[i + 2]]);
-  triples.sort((a, b) => b[2] - a[2]);
-  return triples.slice(0, N).map(t => [t[0], t[1]]);
+  // UE-style domain warp (bilinear value noise, amplitude in metres)
+  if (warp > 0) {
+    const refWarp  = scale > 0 ? scale : Math.max(rMin * 3.5, 2);
+    const warpFreq = 1 / (Math.max(refWarp, 0.001) * 2);
+    pts = pts.map(([px, py]) => {
+      const wX = ueValueNoise2D(px, py, warpFreq, sp, 1234567, 0,    13.71) * 2 - 1;
+      const wY = ueValueNoise2D(px, py, warpFreq, sp, 7654321, 31.41, 57.23) * 2 - 1;
+      return [px + wX * warp, py + wY * warp];
+    });
+  }
+
+  // Clamp to grid and normalise to unit square
+  return pts.map(([px, py]) => [
+    Math.max(0, Math.min(1, px / G)),
+    Math.max(0, Math.min(1, py / G))
+  ]);
 }
 
 // Render dispersion preview for all rows that have at least one selected cell.
@@ -2261,7 +2300,7 @@ function renderDispersionForSelection() {
   // Dot size = approximate tree canopy in real meters (≈1.5 m radius),
   // clamped so it stays legible at extreme zooms.
   const treeRadiusM = 1.5;
-  const dotR = Math.max(0.7, Math.min(7, (treeRadiusM / dispGridSizeM) * w));
+  const dotR = Math.max(0.5, Math.min(12, (treeRadiusM / dispGridSizeM) * w * dispDotSizeMul));
 
   const infoLines = [];
   ctx.globalAlpha = alpha;
