@@ -27,6 +27,22 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; b
 #table-badge { background: #0a1a30; border: 1px solid #2a4a80; padding: 2px 10px; border-radius: 10px; font-size: 11px; color: #8aaad0; }
 #status-msg  { color: #7a9abf; font-size: 11px; margin-left: auto; white-space: nowrap; }
 
+/* ── Unreal mode (shown only when the Eco Table bridge in the editor answers) ── */
+.ue-only { display: none !important; }
+body.ue-mode .ue-only { display: inline-block !important; }
+.btn.ue { background: #3a2a10; border-color: #a07020; }
+.btn.ue:hover { background: #5a4018; }
+#ue-picker { position: fixed; inset: 0; background: rgba(0,0,0,.55); display: none; align-items: center; justify-content: center; z-index: 1000; }
+#ue-picker.open { display: flex; }
+#ue-picker-box { background: #16213e; border: 1px solid #2a4a80; border-radius: 6px; padding: 14px; width: min(600px, 92vw); max-height: 80vh; display: flex; flex-direction: column; gap: 8px; }
+#ue-picker-list { overflow: auto; flex: 1; font-size: 12px; }
+#ue-picker-list .ue-sec { color: #7a9abf; margin: 8px 0 2px; font-weight: 600; }
+#ue-picker-list label { display: flex; gap: 6px; padding: 2px 4px; cursor: pointer; align-items: center; }
+#ue-picker-list label:hover { background: #0f3460; }
+#ue-picker-list .ue-path { color: #6a7a90; margin-left: auto; font-size: 11px; }
+#ue-picker-btns { display: flex; gap: 6px; justify-content: flex-end; }
+.fp-ref-missing.ue-click { cursor: pointer; text-decoration: underline dotted; }
+
 /* ── Selection bar  (sits between toolbar and grid) ── */
 #sel-bar {
   background: #0d1e38; border-bottom: 2px solid #2a5aaa;
@@ -143,6 +159,9 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; b
 <div id="toolbar">
   <button class="btn" onclick="openFiles()">📂 Open CSV</button>
   <button class="btn green" onclick="saveFile()">💾 Save CSV</button>
+  <button class="btn ue ue-only" onclick="ueOpenPicker()" title="Open Aziel species / ecosystem DataTables from the running Unreal editor">🎮 Open from Unreal</button>
+  <button class="btn ue ue-only" onclick="ueReloadGridFiles()" title="Re-read the shown tables from Unreal (asks before discarding unsaved edits)">↻ Reload</button>
+  <button class="btn ue ue-only" onclick="ueSaveAndRegenerate()" title="Save changed tables into Unreal, then regenerate the Aziel Ecosystem actors">⟳ Save + Regenerate</button>
   <div class="tsep"></div>
   <button class="btn purple" onclick="openThumbs()">🖼 Thumbnails Folder</button>
   <button class="btn" onclick="addRow()">+ Add Row</button>
@@ -1016,10 +1035,12 @@ function buildVariantRowElement(params) {
       cellRenderer(p) {
         const w = document.createElement('div');
         w.style.cssText = 'display:flex;align-items:center;justify-content:center;height:100%;';
-        const url = thumbCache[getMeshName(p.data?.Mesh || '')];
+        const url = thumbUrl(p.data?.Mesh);
         if (url) {
           const img = document.createElement('img');
           img.style.cssText = 'max-height:44px;max-width:50px;object-fit:contain;cursor:zoom-in;';
+          img.loading = 'lazy';
+          img.onerror = () => img.remove();
           img.src = url;
           const popup = document.getElementById('thumb-popup');
           img.addEventListener('mouseenter', () => { popup.innerHTML = `<img src="${url}">`; popup.style.display = 'block'; });
@@ -1349,10 +1370,12 @@ function openModal(node) {
         cellRenderer(params) {
           const wrap = document.createElement('div');
           wrap.style.cssText = 'display:flex;align-items:center;justify-content:center;height:100%;';
-          const url = thumbCache[getMeshName(params.data?.Mesh || '')];
+          const url = thumbUrl(params.data?.Mesh);
           if (url) {
             const img = document.createElement('img');
             img.style.cssText = 'max-height:44px;max-width:50px;object-fit:contain;cursor:zoom-in;';
+            img.loading = 'lazy';
+            img.onerror = () => img.remove();
             img.src = url;
             const popup = document.getElementById('thumb-popup');
             img.addEventListener('mouseenter', e => {
@@ -1435,6 +1458,13 @@ function saveVariants() {
 // THUMBNAILS  (directory picker — for future use)
 // ═══════════════════════════════════════════════════════
 function getMeshName(path) { return (path.split('/').pop() || '').split('.')[0]; }
+// Thumbnail for a mesh path: a loaded Thumbnails folder wins; otherwise Unreal renders it (bridge caches the PNG).
+function thumbUrl(mesh) {
+  mesh = (mesh || '').trim();
+  const local = thumbCache[getMeshName(mesh)];
+  if (local || !UE || !mesh.includes('/')) return local;
+  return UE.base + '/api/thumb?mesh=' + encodeURIComponent(mesh);
+}
 async function openThumbs() {
   try {
     thumbDir   = await window.showDirectoryPicker({ mode: 'read' });
@@ -1535,6 +1565,13 @@ async function saveFile() {
     const rec = fileRegistry.get(fname);
     if (!rec) continue;
     const csv = serializeCSV(rec.rows, rec.headers);
+    if (rec.ue) {  // table opened from Unreal: write it back into the DataTable asset
+      if (!(await ueSaveRecord(rec, csv))) continue;
+      rec.dirty = false;
+      if (fname === activeFileName) isDirty = false;
+      savedCount++;
+      continue;
+    }
     try {
       if (rec.handle) {
         const w = await rec.handle.createWritable();
@@ -1752,7 +1789,8 @@ function getReferencedSDTs(rows) {
     const loadedFileName = [...fileRegistry.keys()].find(k =>
       k.replace(/\.csv$/i, '') === assetName
     ) || null;
-    seen.set(assetName, { assetName, loadedFileName });
+    const pm = row.SpeciesList.match(/'(\/[^'.]+)\.[^']+'/);  // package path, for loading from Unreal
+    seen.set(assetName, { assetName, loadedFileName, pkgPath: pm ? pm[1] : null });
   });
   return [...seen.values()];
 }
@@ -1888,9 +1926,11 @@ function renderFilePanel() {
     html += `<div class="fp-section-head">Ecosystem Tables</div>`;
     ecoFiles.forEach(rec => {
       html += entryHtml(rec);
-      getReferencedSDTs(rec.rows).forEach(({ assetName, loadedFileName }) => {
+      getReferencedSDTs(rec.rows).forEach(({ assetName, loadedFileName, pkgPath }) => {
         if (loadedFileName) {
           html += `<div class="fp-ref fp-ref-loaded" onclick="handleFilePanelClick(event,${sq(loadedFileName)})"><span class="fp-ref-arrow">└</span><span>${esc(assetName)}</span></div>`;
+        } else if (UE && pkgPath) {
+          html += `<div class="fp-ref fp-ref-missing ue-click" title="Load from Unreal" onclick="ueOpenRef(${sq(pkgPath)})"><span class="fp-ref-arrow">└</span><span>${esc(assetName)}</span></div>`;
         } else {
           html += `<div class="fp-ref fp-ref-missing"><span class="fp-ref-arrow">└</span><span>${esc(assetName)}</span></div>`;
         }
@@ -2475,6 +2515,139 @@ const NOISE_FIELDS = new Set([
 // UTILS
 // ═══════════════════════════════════════════════════════
 const esc = s => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+// ═══════════════════════════════════════════════════════
+// UNREAL BACKEND
+// When the Eco Table bridge (EcoTableEditor plugin, eco_table_bridge.py)
+// answers on 127.0.0.1:8765, tables can be opened from and saved straight
+// into the DataTable assets of the running editor. Records opened this way
+// carry rec.ue = { path, baseCsv }; baseCsv is the editor's copy at load/save
+// time so a save can detect edits made meanwhile in Unreal (e.g. via MCP).
+// ═══════════════════════════════════════════════════════
+let UE = null;  // { base, info } once the bridge has answered
+
+async function ueProbe() {
+  const local = /^https?:$/.test(location.protocol) && /^(127\.0\.0\.1|localhost)$/.test(location.hostname);
+  const bases = local ? ['', 'http://127.0.0.1:8765'] : ['http://127.0.0.1:8765'];
+  for (const base of bases) {
+    try {
+      const r = await fetch(base + '/api/ping', { cache: 'no-store' });
+      if (r.ok) { UE = { base, info: await r.json() }; break; }
+    } catch (e) { /* bridge not running */ }
+  }
+  document.body.classList.toggle('ue-mode', !!UE);
+  if (UE) setStatus(`Connected to Unreal (${UE.info.project})`);
+}
+
+async function ueApi(path, body) {
+  const opts = body === undefined ? { cache: 'no-store' }
+    : { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) };
+  const r = await fetch(UE.base + path, opts);
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok && r.status !== 409) throw new Error(data.error || `HTTP ${r.status}`);
+  return { status: r.status, data };
+}
+
+const ueAssetName = path => path.replace(/\/+$/, '').split('/').pop();
+
+// Load one DataTable from Unreal into the file registry (does not change the grid).
+async function ueLoadTable(path) {
+  const name = ueAssetName(path);
+  const existing = fileRegistry.get(name);
+  if (existing && (existing.dirty || (gridFiles.length === 1 && gridFiles[0] === name && isDirty))) {
+    if (!confirm(`${name} has unsaved edits. Discard them and reload from Unreal?`)) return name;
+  }
+  const { data } = await ueApi('/api/table?path=' + encodeURIComponent(path));
+  const { headers, rows } = parseCSV(data.csv);
+  fileRegistry.set(name, { name, type: detectType(headers), rows, headers, handle: null, dirty: false,
+                           ue: { path, baseCsv: data.csv } });
+  return name;
+}
+
+async function ueLoadMany(paths) {
+  const names = [];
+  for (const p of paths) {
+    try { names.push(await ueLoadTable(p)); }
+    catch (e) { setStatus(`Could not load ${ueAssetName(p)}: ${e.message}`); }
+  }
+  if (!names.length) return;
+  if (gridFiles.length === 0 || names.some(n => gridFiles.includes(n))) {
+    const shown = gridFiles.filter(n => fileRegistry.has(n));
+    const target = shown.length ? shown
+      : [names.find(n => fileRegistry.get(n)?.type === 'ecosystem') || names[0]];
+    showFilesInGrid(target);
+  } else {
+    document.getElementById('file-panel').style.display = 'flex';
+    renderFilePanel();
+  }
+  setStatus(`Loaded ${names.length} table${names.length > 1 ? 's' : ''} from Unreal`);
+}
+
+// Save one record into Unreal. Returns true when written.
+async function ueSaveRecord(rec, csv) {
+  let res = await ueApi('/api/table', { path: rec.ue.path, csv, baseCsv: rec.ue.baseCsv });
+  if (res.status === 409) {
+    const overwrite = confirm(`${rec.name} was changed in Unreal since you opened it.\n\n` +
+      `OK = overwrite Unreal with your version\nCancel = keep your edits here unsaved (use ↻ Reload to see Unreal's version)`);
+    if (!overwrite) return false;
+    res = await ueApi('/api/table', { path: rec.ue.path, csv, force: true });
+  }
+  rec.ue.baseCsv = res.data.csv;
+  return true;
+}
+
+async function ueSaveAndRegenerate() {
+  await saveFile();
+  try {
+    const { data } = await ueApi('/api/regenerate', {});
+    const n = (data.regenerated || []).filter(r => r.event).length;
+    setStatus(n ? `Saved ✓ · regenerated ${n} ecosystem actor${n > 1 ? 's' : ''}` : 'Saved ✓ · no Aziel Ecosystem actor found to regenerate');
+  } catch (e) { setStatus('Regenerate failed: ' + e.message); }
+}
+
+async function ueReloadGridFiles() {
+  snapshotAllFiles();
+  const recs = gridFiles.map(n => fileRegistry.get(n)).filter(r => r && r.ue);
+  if (!recs.length) { setStatus('Nothing from Unreal is shown'); return; }
+  if (recs.length === 1 && isDirty) recs[0].dirty = true;
+  await ueLoadMany(recs.map(r => r.ue.path));
+}
+
+async function ueOpenRef(pkgPath) { await ueLoadMany([pkgPath]); }
+
+// ── Table picker ──
+async function ueOpenPicker() {
+  if (!UE) return;
+  let tables;
+  try { tables = (await ueApi('/api/tables?struct=all')).data.tables; }
+  catch (e) { setStatus('Unreal: ' + e.message); return; }
+  const open = new Set([...fileRegistry.values()].filter(r => r.ue).map(r => r.ue.path));
+  const group = t => tables.filter(x => x.type === t).map(x => `
+    <label><input type="checkbox" value="${esc(x.path)}" ${open.has(x.path) ? 'checked disabled' : ''}>
+      ${esc(x.name)}<span class="ue-path">${esc(x.path.replace(/\/[^/]+$/, ''))}</span></label>`).join('');
+  document.getElementById('ue-picker-list').innerHTML =
+    `<div class="ue-sec">Ecosystem tables</div>${group('ecosystem') || '<i>none</i>'}` +
+    `<div class="ue-sec">Species tables</div>${group('species') || '<i>none</i>'}`;
+  document.getElementById('ue-picker').classList.add('open');
+}
+
+function uePickerClose() { document.getElementById('ue-picker').classList.remove('open'); }
+
+async function uePickerUseSelection() {
+  try {
+    const sel = new Set((await ueApi('/api/selection')).data.paths);
+    document.querySelectorAll('#ue-picker-list input:not(:disabled)').forEach(cb => { cb.checked = sel.has(cb.value); });
+    if (!sel.size) setStatus('No DataTables selected in the Content Browser');
+  } catch (e) { setStatus('Unreal: ' + e.message); }
+}
+
+async function uePickerOpen() {
+  const paths = [...document.querySelectorAll('#ue-picker-list input:checked:not(:disabled)')].map(cb => cb.value);
+  uePickerClose();
+  if (paths.length) await ueLoadMany(paths);
+}
+
+window.addEventListener('load', ueProbe);
+
 const setStatus = msg => { document.getElementById('status-msg').textContent = msg; };
 
 document.getElementById('modal-bg').addEventListener('click', e => {
@@ -2490,6 +2663,17 @@ document.getElementById('modal-bg').addEventListener('click', e => {
       <button class="btn" onclick="fpConfirmChoice('cancel')">Cancel</button>
       <button class="btn" onclick="fpConfirmChoice('discard')">Discard</button>
       <button class="btn green" onclick="fpConfirmChoice('save')">Save</button>
+    </div>
+  </div>
+</div>
+<div id="ue-picker" onclick="if (event.target === this) uePickerClose()">
+  <div id="ue-picker-box">
+    <strong>Open DataTables from Unreal</strong>
+    <div id="ue-picker-list"></div>
+    <div id="ue-picker-btns">
+      <button class="btn" onclick="uePickerUseSelection()" title="Tick the DataTables currently selected in the Content Browser">Use Content Browser selection</button>
+      <button class="btn" onclick="uePickerClose()">Cancel</button>
+      <button class="btn green" onclick="uePickerOpen()">Open selected</button>
     </div>
   </div>
 </div>
