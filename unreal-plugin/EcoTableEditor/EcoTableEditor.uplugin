@@ -1,0 +1,17 @@
+{
+	"FileVersion": 3,
+	"Version": 1,
+	"VersionName": "0.1",
+	"FriendlyName": "Eco Table Editor",
+	"Description": "Serves the UE DataTable Editor web app on http://127.0.0.1:8765 and lets it read/write Aziel Ecosystem species and ecosystem DataTables live in the editor.",
+	"Category": "Editor",
+	"CreatedBy": "Bates Hollow",
+	"CanContainContent": true,
+	"EnabledByDefault": true,
+	"IsBetaVersion": true,
+	"Plugins": [
+		{ "Name": "PythonScriptPlugin", "Enabled": true },
+		{ "Name": "EditorScriptingUtilities", "Enabled": true },
+		{ "Name": "WebBrowserWidget", "Enabled": true }
+	]
+}

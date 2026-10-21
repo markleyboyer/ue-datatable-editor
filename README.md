@@ -19,10 +19,24 @@ The Aziel Arts Ecological Biome system uses Unreal Engine DataTables to define s
 | `DT_PlatteEcosystems.csv` | Example Ecosystem DataTable for trying out the editor |
 | `chop_thumbnails.py` | Utility: chop a UE content-browser screenshot into named PNGs |
 | `chop_all_species.py` | Utility: batch-run chop_thumbnails for all species folders |
+| `unreal-plugin/EcoTableEditor/` | Optional Unreal Engine plugin (Python bridge) for editing the DataTables live inside a running editor; see below |
 
 The editor opens any UE DataTable CSV from your local disk — you don't need any of the example files in the repo to use it.
 
 See [HOW-TO-USE.md](HOW-TO-USE.md) for step-by-step instructions.
+
+---
+
+## Unreal mode (live editing inside the editor)
+
+With the **EcoTableEditor** plugin installed in your Unreal project, the editor talks directly to the running Unreal editor instead of CSV files:
+
+- **🎮 Open from Unreal**: pick species / ecosystem DataTables straight from the project (or from your Content Browser selection)
+- **⟳ Save + Regenerate**: write your edits into the DataTable assets and regenerate the Aziel Ecosystem actors in the open level, with a conflict check if the table changed in Unreal meanwhile
+- **●/○ on/off switches**: hide ecosystems (Visible flag) or species (stems/ha parked at 0, real value remembered) and bring them back exactly
+- **Mesh thumbnails** rendered by Unreal itself
+
+The plugin is a small Python HTTP server that starts with the editor and serves this app on `http://127.0.0.1:8765/`. The buttons above appear automatically when the bridge answers. Install steps, the HTTP API and a mock mode for testing without Unreal are in [unreal-plugin/EcoTableEditor/README.md](unreal-plugin/EcoTableEditor/README.md).
 
 ---
 
