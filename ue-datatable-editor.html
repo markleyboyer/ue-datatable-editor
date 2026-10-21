@@ -32,6 +32,12 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; b
 body.ue-mode .ue-only { display: inline-block !important; }
 .btn.ue { background: #3a2a10; border-color: #a07020; }
 .btn.ue:hover { background: #5a4018; }
+
+/* ── Species on/off (stems/ha parked at 0, real value remembered) ── */
+.row-off .ag-cell { opacity: 0.4; }
+.row-off .ag-cell.sp-onoff-cell { opacity: 1; }
+.sp-onoff { background: none; border: none; cursor: pointer; font-size: 15px; line-height: 1; padding: 0; width: 100%; color: #6fdc8c; }
+.sp-onoff.off { color: #66708a; }
 #ue-picker { position: fixed; inset: 0; background: rgba(0,0,0,.55); display: none; align-items: center; justify-content: center; z-index: 1000; }
 #ue-picker.open { display: flex; }
 #ue-picker-box { background: #16213e; border: 1px solid #2a4a80; border-radius: 6px; padding: 14px; width: min(600px, 92vw); max-height: 80vh; display: flex; flex-direction: column; gap: 8px; }
@@ -166,6 +172,13 @@ body.ue-mode .ue-only { display: inline-block !important; }
   <button class="btn purple" onclick="openThumbs()">🖼 Thumbnails Folder</button>
   <button class="btn" onclick="addRow()">+ Add Row</button>
   <div class="tsep"></div>
+  <span id="sp-onoff-tools" style="display:none">
+    <button class="btn" onclick="speciesSetAll(true)" title="Switch every row in the shown tables on (species: restores the remembered stems/ha; ecosystems: Visible = True)">● All on</button>
+    <button class="btn" onclick="speciesSetAll(false)" title="Switch every row off (species: stems/ha → 0, real value remembered; ecosystems: Visible = False, other settings untouched)">○ All off</button>
+    <button class="btn" onclick="speciesSetSelected(true)" title="Switch the rows of the selected cells on">● Sel on</button>
+    <button class="btn" onclick="speciesSetSelected(false)" title="Switch the rows of the selected cells off">○ Sel off</button>
+    <div class="tsep"></div>
+  </span>
   <span id="table-badge">No file loaded</span>
   <span id="file-name"></span>
   <span id="status-msg"></span>
@@ -802,6 +815,7 @@ function buildColDefs(type, headers) {
       }
     };
     return [
+      onOffColumn(),
       speciesKeyCol,
       { field: 'StemsPerHectare',    headerName: 'Stems/ha',       editable: true, width: 90,  type: 'numericColumn' },
       { field: 'DispersionType',     headerName: 'Dispersion',     editable: true, width: 110,
@@ -826,6 +840,7 @@ function buildColDefs(type, headers) {
   }
 
   if (type === 'ecosystem') return [
+    onOffColumn(),
     keyCol,
     { field: 'EcosystemVisible',     headerName: 'Visible',    editable: true, width: 80,
       cellEditor: 'agSelectCellEditor', cellEditorParams: { values: ['True', 'False'] } },
@@ -890,7 +905,7 @@ function initGrid(rows, defs) {
     stopEditingWhenCellsLoseFocus: true,
     defaultColDef: { resizable: true, sortable: true },
     getRowId:    p => p.data._gid || p.data._key,
-    getRowClass: p => p.data._isLabel ? 'grid-file-label-row' : '',
+    getRowClass: p => p.data._isLabel ? 'grid-file-label-row' : (speciesIsOff(p.data) ? 'row-off' : ''),
 
     isFullWidthRow: p => !!p.rowNode.data._isLabel || !!p.rowNode.data._isVariant,
     fullWidthCellRenderer: params => {
@@ -927,6 +942,14 @@ function initGrid(rows, defs) {
 
       // If this edited cell is part of a multi-cell selection,
       // propagate the new value to all other selected cells in the same column.
+      // A hand edit of stems/ha on a switched-off species means it is on again.
+      if (field === 'EcosystemVisible') params.api.redrawRows({ rowNodes: [params.node] });
+      if (field === 'StemsPerHectare' && parseFloat(newVal) !== 0 && speciesIsOff(params.data)) {
+        delete hiddenSpecies[speciesTable(params.data)][params.data._key];
+        persistHiddenSpecies();
+        params.api.redrawRows({ rowNodes: [params.node] });
+      }
+
       const thisKey = cellKey(params.node.id, field);
       if (!_suppressBroadcast && selectedCells.has(thisKey) && selectedCells.size > 1) {
         selectedCells.forEach(k => {
@@ -1737,6 +1760,8 @@ function showFilesInGrid(names) {
     tableType === 'species' ? 'Species Table' : tableType === 'ecosystem' ? 'Ecosystem Table' : 'Data Table';
   document.getElementById('file-name').textContent = multi ? `${names.length} files` : names[0];
   initGrid(combinedRows, buildColDefs(tableType, firstRec.headers));
+  document.getElementById('sp-onoff-tools').style.display =
+    (tableType === 'species' || tableType === 'ecosystem') ? 'inline-flex' : 'none';
   document.getElementById('file-panel').style.display = 'flex';
   setStatus(multi ? `${dataCount} rows from ${names.length} files` : `${firstRec.rows.length} rows`);
   renderFilePanel();
@@ -2536,6 +2561,7 @@ async function ueProbe() {
   }
   document.body.classList.toggle('ue-mode', !!UE);
   if (UE) setStatus(`Connected to Unreal (${UE.info.project})`);
+  await loadHiddenSpecies();
 }
 
 async function ueApi(path, body) {
@@ -2644,6 +2670,105 @@ async function uePickerOpen() {
   const paths = [...document.querySelectorAll('#ue-picker-list input:checked:not(:disabled)')].map(cb => cb.value);
   uePickerClose();
   if (paths.length) await ueLoadMany(paths);
+}
+
+// ═══════════════════════════════════════════════════════
+// ROW ON / OFF
+// Ecosystem rows: flips EcosystemVisible (nothing else changes).
+// Species rows have no visible flag, so "off" parks StemsPerHectare at 0 and
+// remembers the real value in hiddenSpecies = {table: {row: stems}}, stored by
+// the bridge (Saved/EcoTableEditor/hidden_species.json) or in localStorage.
+// "On" restores the remembered value exactly.
+// ═══════════════════════════════════════════════════════
+let hiddenSpecies = {};
+const speciesTable = d => d._file || activeFileName;
+const rowTableType = d => fileRegistry.get(speciesTable(d))?.type;
+const hasOwn = (o, k) => Object.prototype.hasOwnProperty.call(o, k);
+
+function speciesIsOff(d) {
+  if (!d || d._isLabel || d._isVariant) return false;
+  const t = rowTableType(d);
+  if (t === 'ecosystem') return String(d.EcosystemVisible).toLowerCase() === 'false';
+  if (t === 'species') { const h = hiddenSpecies[speciesTable(d)]; return !!(h && hasOwn(h, d._key)); }
+  return false;
+}
+
+function onOffColumn() {
+  return {
+    field: '_on', headerName: '', width: 36, pinned: 'left', editable: false,
+    sortable: false, resizable: false, suppressMenu: true, cellClass: 'sp-onoff-cell',
+    cellRenderer(params) {
+      const off = speciesIsOff(params.data);
+      const eco = rowTableType(params.data) === 'ecosystem';
+      const btn = document.createElement('button');
+      btn.className = 'sp-onoff' + (off ? ' off' : '');
+      btn.textContent = off ? '○' : '●';
+      btn.title = eco ? (off ? 'Hidden: click to make visible' : 'Visible: click to hide (settings are kept)')
+                      : (off ? 'Off: click to switch on (restores the remembered stems/ha)'
+                             : 'On: click to switch off (stems/ha → 0, the real value is remembered)');
+      btn.addEventListener('click', e => { e.stopPropagation(); speciesSetOn([params.node], off); });
+      return btn;
+    }
+  };
+}
+
+async function loadHiddenSpecies() {
+  try {
+    hiddenSpecies = UE ? ((await ueApi('/api/hidden')).data.hidden || {})
+                       : JSON.parse(localStorage.getItem('ecoHiddenSpecies') || '{}');
+  } catch (e) { hiddenSpecies = {}; }
+  if (gridApi) gridApi.redrawRows();
+}
+
+function persistHiddenSpecies() {
+  try { localStorage.setItem('ecoHiddenSpecies', JSON.stringify(hiddenSpecies)); } catch (e) { /* storage blocked */ }
+  if (UE) ueApi('/api/hidden', { hidden: hiddenSpecies }).catch(e => setStatus('Could not store the on/off state: ' + e.message));
+}
+
+function speciesSetOn(nodes, on) {
+  let changed = 0;
+  // Cell-value events arrive after this function returns, so a live selection would
+  // broadcast one row's restored stems/ha to every selected cell: drop it first.
+  clearSel();
+  _suppressBroadcast = true;
+  try {
+    nodes.forEach(node => {
+      const d = node.data;
+      if (!d || d._isLabel || d._isVariant) return;
+      const type = rowTableType(d), table = speciesTable(d);
+      if (type === 'ecosystem') {
+        const want = on ? 'True' : 'False';
+        if (String(d.EcosystemVisible) !== want) { node.setDataValue('EcosystemVisible', want); changed++; }
+      } else if (type === 'species') {
+        const h = hiddenSpecies[table] = hiddenSpecies[table] || {};
+        const off = hasOwn(h, d._key);
+        if (on && off) { node.setDataValue('StemsPerHectare', h[d._key]); delete h[d._key]; changed++; }
+        else if (!on && !off) { h[d._key] = d.StemsPerHectare ?? '0.000000'; node.setDataValue('StemsPerHectare', '0.000000'); changed++; }
+      }
+    });
+  } finally {
+    _suppressBroadcast = false;
+  }
+  persistHiddenSpecies();
+  gridApi.redrawRows({ rowNodes: nodes });
+  updateCharts();
+  setStatus(changed ? `${changed} row${changed > 1 ? 's' : ''} switched ${on ? 'on' : 'off'} · ${UE ? '⟳ Save + Regenerate' : '💾 Save'} to apply`
+                    : `Nothing to switch ${on ? 'on' : 'off'}`);
+}
+
+function speciesSetAll(on) {
+  if (!gridApi) return;
+  const nodes = [];
+  gridApi.forEachNode(n => { if (n.data && !n.data._isLabel && !n.data._isVariant) nodes.push(n); });
+  speciesSetOn(nodes, on);
+}
+
+function speciesSetSelected(on) {
+  if (!gridApi) return;
+  const ids = [...new Set([...selectedCells].map(k => k.split('||')[0]))];
+  const nodes = ids.map(id => gridApi.getRowNode(id)).filter(Boolean);
+  if (!nodes.length) { setStatus('Select a cell in each row you want to switch'); return; }
+  speciesSetOn(nodes, on);
 }
 
 window.addEventListener('load', ueProbe);
