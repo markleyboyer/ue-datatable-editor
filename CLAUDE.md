@@ -34,6 +34,8 @@ Live canvas preview in the sidebar that shows the spatial pattern a species will
 - **Seeded RNG** is `mulberry32`; same inputs → identical patterns (good for reproducibility and visual stability while editing other fields).
 - **R<sub>actual</sub>** computed via `clarkEvansR(pts)` — pairwise nearest-neighbor scan, fine up to a few thousand points.
 
+- **UE density loss**: `ueKeptFraction(type, R)` models Aziel's dispersion cull (PCG_AQS_AssignMeshes divides by a constant noise mean: Random 0.5, Clumped/Uniform 0.2, though the real mean depends on R). The preview draws the count UE will actually spawn and warns when it's off by >30%. **🎯 Compensate / ↺ Intended** (species toolbar; selected rows, or all) write stems/ha = intended ÷ kept and remember `intended|written` in `hiddenSpecies['~comp~' + table]`, the same store as row on/off, so re-pressing never compounds.
+
 `DispersionWarpStrength` is a new column added with this work — it's in `FLOAT_FIELDS` and the species `buildColDefs`. The `+ Add Row` defaults set it to `2.000000`.
 
 ## Browser support / fallback

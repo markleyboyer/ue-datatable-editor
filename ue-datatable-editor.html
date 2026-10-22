@@ -177,6 +177,8 @@ body.ue-mode .ue-only { display: inline-block !important; }
     <button class="btn" onclick="speciesSetAll(false)" title="Switch every row off (species: stems/ha → 0, real value remembered; ecosystems: Visible = False, other settings untouched)">○ All off</button>
     <button class="btn" onclick="speciesSetSelected(true)" title="Switch the rows of the selected cells on">● Sel on</button>
     <button class="btn" onclick="speciesSetSelected(false)" title="Switch the rows of the selected cells off">○ Sel off</button>
+    <button class="btn sp-comp" onclick="speciesCompensate(true)" title="Adjust stems/ha so Unreal spawns what you entered (Aziel's Clumping/Uniform cull loses or adds stems depending on Target R). Acts on the selected rows, or all rows if nothing is selected. Safe to press again after changing R or type.">🎯 Compensate</button>
+    <button class="btn sp-comp" onclick="speciesCompensate(false)" title="Put compensated rows back to the stems/ha you intended">↺ Intended</button>
     <div class="tsep"></div>
   </span>
   <span id="table-badge">No file loaded</span>
@@ -1762,6 +1764,7 @@ function showFilesInGrid(names) {
   initGrid(combinedRows, buildColDefs(tableType, firstRec.headers));
   document.getElementById('sp-onoff-tools').style.display =
     (tableType === 'species' || tableType === 'ecosystem') ? 'inline-flex' : 'none';
+  document.querySelectorAll('.sp-comp').forEach(b => { b.style.display = tableType === 'species' ? '' : 'none'; });
   document.getElementById('file-panel').style.display = 'flex';
   setStatus(multi ? `${dataCount} rows from ${names.length} files` : `${firstRec.rows.length} rows`);
   renderFilePanel();
@@ -2154,6 +2157,29 @@ function ueValueNoise2D(px, py, freq, speciesSeed, subSeed, offX, offY) {
        +      nuy  * ((1 - nux) * v01 + nux * v11);
 }
 
+// ─── UE density loss from the dispersion cull (AzielEcosystems v06.05) ───────
+// PCG_AQS_AssignMeshes keeps each candidate with
+//   keepProb = saturate(baseKeep × dispNoise / expectedAverage)
+// where expectedAverage is a constant (Random 0.5, Clumped 0.2, Uniform 0.2)
+// but the real mean of dispNoise depends on TargetRIndex. Returns the fraction
+// of StemsPerHectare UE actually spawns: mean(dispNoise) / expectedAverage.
+// Closed forms match a Monte Carlo of the shader and measured instance counts;
+// they ignore the saturate() cap, so very dense rows can fall a little lower.
+function ueKeptFraction(type, targetR) {
+  const R = targetR || 0;
+  if (type === 'Clumping') {
+    const sf = 0.10 + Math.min(1, Math.max(0, R)) * 0.24;   // sigma / cluster spacing
+    return (1 - Math.exp(-2 * Math.PI * sf * sf)) / 0.20;
+  }
+  if (type === 'Uniform') {
+    const s = Math.min(1, Math.max(0, (R - 1) / 1.15));
+    const f = 0.45 - s * 0.30;                                // radius / grid spacing
+    const k = 1 + s * 8;                                      // sharpness
+    return (2 * Math.PI * f * f / ((k + 1) * (k + 2))) / 0.20;
+  }
+  return 1;                                                   // Random / Poisson
+}
+
 // Generate a dispersion pattern as N points in [0,1]² based on UE field values.
 // `gridSizeM` is the real-world edge length the unit square represents.
 //
@@ -2379,9 +2405,21 @@ function renderDispersionForSelection() {
     const stemsPerHa = parseFloat(d.StemsPerHectare)         || 0;
     const color      = PATTERN_COLORS[idx % PATTERN_COLORS.length];
 
-    const realN = Math.max(0, Math.round(stemsPerHa * areaHa));
+    // Draw what UE will actually spawn, not the requested count
+    const kept  = ueKeptFraction(type, targetR);
+    const ueHa  = stemsPerHa * kept;
+    const realN = Math.max(0, Math.round(ueHa * areaHa));
     const N     = Math.min(MAX_PTS_PER_PATTERN, realN);
     const subsampled = realN > N;
+    const intended = compIntended(d);
+    const lossBad  = intended == null && (kept < 0.7 || kept > 1.4);
+    const keptHtml = intended != null
+      ? `<span style="color:#60c080">🎯 compensated · UE spawns ≈${Math.round(ueHa).toLocaleString()}/ha (intended ${intended.toLocaleString()})</span>`
+      : `<span style="color:${lossBad ? '#e0a040' : '#7a9abf'}">UE spawns ≈${Math.round(kept * 100)}%` +
+        ` (≈${Math.round(ueHa).toLocaleString()}/ha)</span>`;
+    const fixHtml  = lossBad && kept > 0
+      ? `<br><span style="color:#e0a040">⚠ enter ≈${Math.round(stemsPerHa / kept).toLocaleString()} stems/ha to get ${stemsPerHa.toLocaleString()} (or press 🎯 Compensate)</span>`
+      : '';
 
     const pts = generateDispersionPoints(type, targetR, scale, warp, seed, N, dispGridSizeM);
 
@@ -2400,6 +2438,7 @@ function renderDispersionForSelection() {
         `  ·  R<sub>target</sub>=${targetR.toFixed(2)}` +
         `  ·  R<sub>actual</sub>=${actualR}` +
         `<br><span style="color:#7a9abf">${stemsPerHa.toLocaleString()} stems/ha · ${areaHa.toFixed(areaHa < 1 ? 3 : 2)} ha · n=${N.toLocaleString()}${subnote}</span>` +
+        `<br>${keptHtml}${fixHtml}` +
         `<br><span style="color:#5a7090">scale ${scale.toFixed(2)} · warp ${warp.toFixed(2)} · seed ${seed}</span>`
       );
     } else {
@@ -2407,7 +2446,7 @@ function renderDispersionForSelection() {
       infoLines.push(
         `<span style="display:inline-block;width:9px;height:9px;background:${color};border-radius:50%;vertical-align:middle;margin-right:6px"></span>` +
         `<span style="color:${color}">${esc(node.data._key)}</span>` +
-        `<span style="color:#7a9abf"> · ${esc(type)} · ${stemsPerHa.toLocaleString()} stems/ha · n=${sub}</span>`
+        `<span style="color:#7a9abf"> · ${esc(type)} · ${stemsPerHa.toLocaleString()} stems/ha · n=${sub}</span> · ${keptHtml}`
       );
     }
   });
@@ -2769,6 +2808,68 @@ function speciesSetSelected(on) {
   const nodes = ids.map(id => gridApi.getRowNode(id)).filter(Boolean);
   if (!nodes.length) { setStatus('Select a cell in each row you want to switch'); return; }
   speciesSetOn(nodes, on);
+}
+
+// ═══════════════════════════════════════════════════════
+// DENSITY COMPENSATION
+// Aziel's dispersion cull under/over-spawns Clumping and Uniform rows by a
+// factor that depends on TargetRIndex (see ueKeptFraction). "Compensate" writes
+// StemsPerHectare = intended ÷ kept so UE spawns the intended density, and
+// remembers intended|written per row in hiddenSpecies['~comp~' + table] (same
+// store as on/off, so the bridge keeps it). Pressing it again recomputes from
+// the remembered intended value, so it never compounds; a hand edit of stems/ha
+// makes the new number the intended one.
+// ═══════════════════════════════════════════════════════
+const COMP_PREFIX = '~comp~';
+
+function compIntended(d) {
+  const e = (hiddenSpecies[COMP_PREFIX + speciesTable(d)] || {})[d._key];
+  if (!e) return null;
+  const [intended, written] = String(e).split('|').map(parseFloat);
+  const cur = parseFloat(d.StemsPerHectare) || 0;
+  return Math.abs(cur - written) <= 1e-3 * Math.max(1, written) ? intended : null;
+}
+
+function speciesCompensate(on) {
+  if (!gridApi || tableType !== 'species') { setStatus('Open a species table first'); return; }
+  const ids = [...new Set([...selectedCells].map(k => k.split('||')[0]))];
+  let nodes = ids.map(id => gridApi.getRowNode(id)).filter(Boolean);
+  if (!nodes.length) gridApi.forEachNode(n => nodes.push(n));
+  nodes = nodes.filter(n => n.data && !n.data._isLabel && !n.data._isVariant && rowTableType(n.data) === 'species');
+  let changed = 0, maxFactor = 1;
+  clearSel();
+  _suppressBroadcast = true;
+  try {
+    nodes.forEach(node => {
+      const d = node.data;
+      if (speciesIsOff(d)) return;
+      const table = speciesTable(d), key = COMP_PREFIX + table;
+      const store = hiddenSpecies[key] = hiddenSpecies[key] || {};
+      const intended = compIntended(d) ?? (parseFloat(d.StemsPerHectare) || 0);
+      const kept = ueKeptFraction(d.DispersionType || 'Random', parseFloat(d.TargetRIndex) || 0);
+      let want = intended;
+      if (on && intended > 0 && kept > 0 && Math.abs(kept - 1) > 0.02) {
+        want = intended / kept;
+        store[d._key] = `${intended}|${want.toFixed(6)}`;
+        maxFactor = Math.max(maxFactor, 1 / kept);
+      } else {
+        delete store[d._key];
+      }
+      if (Math.abs((parseFloat(d.StemsPerHectare) || 0) - want) > 1e-6) {
+        node.setDataValue('StemsPerHectare', want.toFixed(6)); changed++;
+      }
+      if (!Object.keys(store).length) delete hiddenSpecies[key];
+    });
+  } finally {
+    _suppressBroadcast = false;
+  }
+  persistHiddenSpecies();
+  gridApi.redrawRows({ rowNodes: nodes });
+  updateCharts();
+  refreshDispersionIfActive();
+  const cost = maxFactor > 10 ? ` · ⚠ up to ×${Math.round(maxFactor)}: this raises the point budget, so check frame time` : '';
+  setStatus(changed ? `${changed} row${changed > 1 ? 's' : ''} ${on ? 'compensated' : 'restored to intended stems/ha'}${cost} · ${UE ? '⟳ Save + Regenerate' : '💾 Save'} to apply`
+                    : `Nothing to ${on ? 'compensate' : 'restore'}`);
 }
 
 window.addEventListener('load', ueProbe);
