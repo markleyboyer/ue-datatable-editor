@@ -64,6 +64,9 @@ body.ue-mode .ue-only { display: inline-block !important; }
 #sel-val:focus { outline: none; border-color: #5a9ae0; box-shadow: 0 0 0 2px rgba(90,154,224,0.2); }
 #sel-val:disabled { opacity: 0.35; }
 #sel-hint { color: #3a5a80; font-size: 11px; white-space: nowrap; }
+/* Drag-to-scrub numeric cells */
+.ag-cell.num-scrub { cursor: ew-resize; }
+body.scrubbing, body.scrubbing * { cursor: ew-resize !important; user-select: none !important; }
 /* Range (min/max) inputs — swapped in for range-type fields */
 #sel-range { display: none; align-items: center; gap: 6px; }
 #sel-range.on { display: flex; }
@@ -344,6 +347,21 @@ function niceRound(value) {
   return Math.sign(value) * Math.round(abs / step) * step;
 }
 
+// Display-only: drop trailing zeros ("0.600000" → "0.6", "500.000000" → "500").
+// The stored value keeps UE's 6-decimal form.
+function fmtNum(v) {
+  const s = String(v ?? '').trim();
+  if (!/^-?\d*\.\d+$/.test(s)) return s;
+  return s.replace(/\.?0+$/, '');
+}
+
+// Numeric columns: trailing-zero-free display + drag-to-scrub cursor.
+function withNumCols(defs) {
+  return defs.map(d => d.type === 'numericColumn'
+    ? { valueFormatter: p => fmtNum(p.value), cellClass: 'num-scrub', ...d }
+    : d);
+}
+
 function parseVec2(s) {
   const m = String(s).match(/X=([\d.eE+-]+),Y=([\d.eE+-]+)/);
   if (m) return { x: m[1], y: m[2] };
@@ -574,7 +592,7 @@ function updateSelBar() {
       input.style.display = '';
       apply.style.display = '';
       range.classList.remove('on');
-      input.value       = sameVal ?? '';
+      input.value       = fmtNum(sameVal ?? '');
       input.placeholder = sameVal === null ? 'multiple values…' : '';
       input.disabled    = false;
       apply.disabled    = false;
@@ -745,6 +763,12 @@ document.addEventListener('DOMContentLoaded', () => {
     dispDotLbl.textContent = `${+dispDotEl.value}%`;
     refreshDispersionIfActive();
   });
+
+  attachScrub(document.getElementById('grid'), () => gridApi, {
+    targets: mainScrubTargets,
+    live:    mainScrubLive,
+  });
+  attachScrub(document.getElementById('modal-grid'), () => modalGridApi);
 });
 
 // ═══════════════════════════════════════════════════════
@@ -764,7 +788,7 @@ function colorRenderer(p) {
 function rangeRenderer(p) {
   if (!p.value) return '';
   const v = parseVec2(p.value);
-  return `${parseFloat(v.x).toFixed(2)} – ${parseFloat(v.y).toFixed(2)}`;
+  return `${fmtNum(v.x)} – ${fmtNum(v.y)}`;
 }
 
 // ═══════════════════════════════════════════════════════
@@ -900,7 +924,7 @@ function initGrid(rows, defs) {
   clearSel();
 
   gridApi = agGrid.createGrid(document.getElementById('grid'), {
-    columnDefs: defs,
+    columnDefs: withNumCols(defs),
     rowData: rows,
     animateRows: true,
     suppressRowClickSelection: true,
@@ -960,7 +984,7 @@ function initGrid(rows, defs) {
             gridApi.getRowNode(rowId)?.setDataValue(field, newVal);
           }
         });
-        document.getElementById('sel-val').value = newVal;
+        document.getElementById('sel-val').value = fmtNum(newVal);
       }
       updateCharts();
       setTimeout(applySelHighlights, 0);
@@ -1107,7 +1131,7 @@ function buildVariantRowElement(params) {
   ];
 
   const miniApi = agGrid.createGrid(gridDiv, {
-    columnDefs: colDefs,
+    columnDefs: withNumCols(colDefs),
     rowData: [...(params.data._variants || [])],
     rowHeight: 52,
     headerHeight: 28,
@@ -1126,6 +1150,7 @@ function buildVariantRowElement(params) {
     },
   });
   variantMiniGrids.set(parentKey, miniApi);
+  attachScrub(gridDiv, () => miniApi);
 
   addBtn.onclick = () => {
     miniApi.applyTransaction({ add: [{
@@ -1389,7 +1414,7 @@ function openModal(node) {
   };
 
   modalGridApi = agGrid.createGrid(document.getElementById('modal-grid'), {
-    columnDefs: [
+    columnDefs: withNumCols([
       { colId: '_thumb', headerName: '', width: 56, editable: false,
         sortable: false, resizable: false, suppressMenu: true,
         cellRenderer(params) {
@@ -1434,7 +1459,7 @@ function openModal(node) {
       { field: 'AlignToSurface',  headerName: 'Align',       editable: true, width: 72,  type: 'numericColumn' },
       { field: 'ZPositionOffset', headerName: 'Z Offset',    editable: true, width: 80,  type: 'numericColumn' },
       variantDelCol,
-    ],
+    ]),
     rowData: parseMeshVariants(node.data.MeshVariants || ''),
     rowHeight: 52,
     animateRows: true,
@@ -2574,6 +2599,121 @@ const DISPERSION_FIELDS = new Set([
 const NOISE_FIELDS = new Set([
   'SpatialNoiseSize', 'SpatialNoiseStrength', 'SpatialNoiseSeed'
 ]);
+
+// ═══════════════════════════════════════════════════════
+// DRAG-TO-SCRUB numeric cells (like Unreal's spin boxes)
+// Press on a number cell and drag left/right. Shift = fine, Ctrl = coarse,
+// Esc = cancel. A press without a drag still clicks / double-click-edits.
+// ═══════════════════════════════════════════════════════
+const SCRUB_THRESHOLD_PX = 3;
+const SIGNED_FIELDS = new Set(['ZPositionOffset']);
+
+// Value change per pixel, picked from the value's magnitude at drag start
+// (500 → 1/px, 5000 → 10/px, 0.6 → 0.01/px). Integer fields: 1 per 4 px.
+function scrubStep(start, isInt) {
+  if (isInt) return 0.25;
+  const a = Math.abs(start);
+  return a < 1 ? 0.01 : Math.pow(10, Math.floor(Math.log10(a)) - 2);
+}
+
+function attachScrub(container, getApi, opts = {}) {
+  container.addEventListener('pointerdown', e => {
+    if (e.button !== 0) return;
+    const cellEl = e.target.closest('.ag-cell.num-scrub');
+    if (!cellEl || cellEl.classList.contains('ag-cell-inline-editing')) return;
+    // Ignore cells of grids nested inside this one (inline variant mini grids)
+    if (cellEl.closest('.ag-root-wrapper')?.parentElement !== container) return;
+    const api   = getApi();
+    const rowId = cellEl.closest('.ag-row')?.getAttribute('row-id');
+    const field = cellEl.getAttribute('col-id');
+    const node  = api && rowId != null ? api.getRowNode(rowId) : null;
+    if (!node || node.data._isLabel || node.data._isVariant) return;
+
+    const x0 = e.clientX;
+    let drag = null;   // { targets, starts, steps, isInt }
+
+    const write = (n, v, isInt) => {
+      if (!SIGNED_FIELDS.has(field)) v = Math.max(0, v);
+      n.data[field] = isInt ? String(Math.round(v)) : v.toFixed(6);
+    };
+    const onMove = ev => {
+      const dx = ev.clientX - x0;
+      if (!drag) {
+        if (Math.abs(dx) < SCRUB_THRESHOLD_PX) return;
+        const targets = opts.targets ? opts.targets(node, field) : [node];
+        const starts  = targets.map(n => String(n.data[field] ?? ''));
+        const isInt   = !FLOAT_FIELDS.has(field) && !starts.some(s => /\./.test(s));
+        drag = { targets, starts, isInt,
+                 steps: starts.map(s => scrubStep(parseFloat(s) || 0, isInt)) };
+        document.body.classList.add('scrubbing');
+        window.getSelection()?.removeAllRanges();
+      }
+      const mul = ev.shiftKey ? 0.1 : (ev.ctrlKey || ev.metaKey) ? 10 : 1;
+      drag.targets.forEach((n, i) => {
+        const step = drag.steps[i] * mul;
+        const dec  = Math.max(0, -Math.floor(Math.log10(step) + 1e-9));
+        const v    = (parseFloat(drag.starts[i]) || 0) + dx * step;
+        write(n, drag.isInt ? v : +v.toFixed(dec), drag.isInt);
+      });
+      api.refreshCells({ rowNodes: drag.targets, columns: [field], force: true });
+      opts.live?.(field);
+    };
+    const end = commit => {
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+      window.removeEventListener('keydown', onKey, true);
+      if (!drag) return;
+      document.body.classList.remove('scrubbing');
+      // Swallow the click that follows the drag so it doesn't reset the selection
+      const swallow = ev => { ev.stopPropagation(); ev.preventDefault(); };
+      window.addEventListener('click', swallow, { capture: true, once: true });
+      setTimeout(() => window.removeEventListener('click', swallow, true), 0);
+      // Restore the start values, then commit through setDataValue so the
+      // normal change path runs once (dirty flag, charts, on/off, preview).
+      const finals = drag.targets.map(n => n.data[field]);
+      drag.targets.forEach((n, i) => { n.data[field] = drag.starts[i]; });
+      _suppressBroadcast = true;
+      try {
+        drag.targets.forEach((n, i) => {
+          if (commit && finals[i] !== drag.starts[i]) n.setDataValue(field, finals[i]);
+        });
+      } finally { _suppressBroadcast = false; }
+      api.refreshCells({ rowNodes: drag.targets, columns: [field], force: true });
+      opts.live?.(field);
+    };
+    const onUp  = () => end(true);
+    const onKey = ev => { if (ev.key === 'Escape' && drag) { ev.preventDefault(); ev.stopPropagation(); end(false); } };
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+    window.addEventListener('keydown', onKey, true);
+  });
+}
+
+// Main grid: a scrub on a cell inside a one-column selection moves every
+// selected cell; otherwise it selects just that cell first.
+function mainScrubTargets(node, field) {
+  const k = cellKey(node.id, field);
+  const oneCol = [...selectedCells].every(s => s.split('||')[1] === field);
+  if (!selectedCells.has(k) || !oneCol) {
+    selectedCells.clear();
+    selectedCells.add(k);
+    anchorCell = { rowId: node.id, field };
+    applySelHighlights();
+    if (tableType === 'species' || tableType === 'ecosystem') renderDispersionForSelection();
+  }
+  return [...selectedCells].map(s => gridApi.getRowNode(s.split('||')[0])).filter(Boolean);
+}
+
+// Redraw the selection bar and pattern preview at most once per frame.
+let _scrubRaf = 0;
+function mainScrubLive(field) {
+  if (_scrubRaf) return;
+  _scrubRaf = requestAnimationFrame(() => {
+    _scrubRaf = 0;
+    updateSelBar();
+    if (DISPERSION_FIELDS.has(field) || NOISE_FIELDS.has(field)) refreshDispersionIfActive();
+  });
+}
 
 // ═══════════════════════════════════════════════════════
 // UTILS
