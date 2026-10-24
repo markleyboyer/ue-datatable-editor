@@ -172,7 +172,6 @@ body.scrubbing, body.scrubbing * { cursor: ew-resize !important; user-select: no
   <button class="btn ue ue-only" onclick="ueReloadGridFiles()" title="Re-read the shown tables from Unreal (asks before discarding unsaved edits)">↻ Reload</button>
   <button class="btn ue ue-only" onclick="ueSaveAndRegenerate()" title="Save changed tables into Unreal, then regenerate the Aziel Ecosystem actors">⟳ Save + Regenerate</button>
   <div class="tsep"></div>
-  <button class="btn purple" onclick="openThumbs()">🖼 Thumbnails Folder</button>
   <button class="btn" onclick="addRow()">+ Add Row</button>
   <div class="tsep"></div>
   <span id="sp-onoff-tools" style="display:none">
@@ -286,8 +285,6 @@ body.scrubbing, body.scrubbing * { cursor: ew-resize !important; user-select: no
 // ═══════════════════════════════════════════════════════
 let gridApi      = null;
 let fileHandle   = null;
-let thumbDir     = null;
-let thumbCache   = {};
 let tableType    = null;   // 'species' | 'ecosystem'
 let origHeaders  = [];
 
@@ -1506,34 +1503,12 @@ function saveVariants() {
 }
 
 // ═══════════════════════════════════════════════════════
-// THUMBNAILS  (directory picker — for future use)
+// THUMBNAILS  (rendered by Unreal; the bridge caches the PNG)
 // ═══════════════════════════════════════════════════════
-function getMeshName(path) { return (path.split('/').pop() || '').split('.')[0]; }
-// Thumbnail for a mesh path: a loaded Thumbnails folder wins; otherwise Unreal renders it (bridge caches the PNG).
 function thumbUrl(mesh) {
   mesh = (mesh || '').trim();
-  const local = thumbCache[getMeshName(mesh)];
-  if (local || !UE || !mesh.includes('/')) return local;
+  if (!UE || !mesh.includes('/')) return null;
   return UE.base + '/api/thumb?mesh=' + encodeURIComponent(mesh);
-}
-async function openThumbs() {
-  try {
-    thumbDir   = await window.showDirectoryPicker({ mode: 'read' });
-    thumbCache = {};
-    setStatus('Thumbnails: loading…');
-    let n = 0;
-    for await (const [name, handle] of thumbDir.entries()) {
-      if (handle.kind !== 'file') continue;
-      const lower = name.toLowerCase();
-      if (!lower.endsWith('.png') && !lower.endsWith('.jpg') && !lower.endsWith('.jpeg')) continue;
-      try {
-        thumbCache[name.replace(/\.[^.]+$/, '')] = URL.createObjectURL(await handle.getFile());
-        n++;
-      } catch {}
-    }
-    setStatus(`Thumbnails: ${n} loaded`);
-    if (modalGridApi) modalGridApi.refreshCells({ force: true });
-  } catch (e) { if (e.name !== 'AbortError') setStatus('Error: ' + e.message); }
 }
 
 // ═══════════════════════════════════════════════════════

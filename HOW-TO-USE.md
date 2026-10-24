@@ -98,7 +98,7 @@ The **Mesh Variants** column in a Species table holds the list of static meshes 
 
 | Column | Field name | Description |
 |--------|-----------|-------------|
-| (thumbnail) | — | Mesh preview image (requires thumbnails folder to be loaded) |
+| (thumbnail) | — | Mesh preview image, rendered by Unreal (Unreal mode only) |
 | Mesh Asset Path | Mesh | Full UE content path, e.g. `/Game/Meshes/SM_Ash_Tree_01a.SM_Ash_Tree_01a` |
 | Age Class | Age Class | Seedling / Sapling / Mature / Dead |
 | Age Wt | AgeClassWeight | Relative spawn weight for this age class (float) |
@@ -113,23 +113,7 @@ The **Mesh Variants** column in a Species table holds the list of static meshes 
 
 Thumbnails show inside the Mesh Variants modal — a small image column on the left, and a 400×400 hover popup when you move the mouse over any thumbnail.
 
-**To load thumbnails:**
-1. Click **🖼 Thumbnails Folder** in the toolbar.
-2. Select the `SpeciesScreenShots/Thumbnails/` folder (or any folder containing PNG/JPG files).
-3. All images in the folder are preloaded. The status bar shows how many were loaded.
-4. Open any Mesh Variants modal — the thumbnail column will now show images for recognized mesh names.
-
-**How thumbnail matching works:** The editor extracts the last segment of the UE asset path before the dot (e.g. `SM_Ash_Tree_NN_01a` from `/Game/.../SM_Ash_Tree_NN_01a.SM_Ash_Tree_NN_01a`) and looks for a PNG file with that exact name in the loaded folder.
-
-**Generating thumbnails from UE content browser screenshots:**
-
-If you have screenshots of the UE content browser showing mesh thumbnails with names visible, the included Python scripts can chop them into individual named PNGs automatically.
-
-1. Place screenshots in `SpeciesScreenShots/` — one per species, named after the species (e.g. `Ash.png`).
-2. Open `chop_all_species.py` and verify the name lists match the assets shown in each screenshot. Use `None` for any slots that should be skipped.
-3. Run `python chop_all_species.py` from the project folder.
-4. Move all output PNGs into `SpeciesScreenShots/Thumbnails/` (flat folder — no subfolders).
-5. Load the folder in the editor as described above.
+Thumbnails are rendered by Unreal through the bridge, so they only appear when the editor is opened from Unreal (Unreal mode). The first view of a mesh takes a moment to render; after that the PNG is cached in the project's `Saved/EcoThumbs/` folder. Delete a file there to re-render it.
 
 ---
 
@@ -222,9 +206,8 @@ Brave disables the File System Access API on `file://` origins as part of its pr
 The file may not be a recognized Species or Ecosystem table. Check that the CSV has either a `MeshVariants` column or a `SpeciesList` column.
 
 **Thumbnails aren't showing in the modal.**
-- Verify the Thumbnails folder was selected (status bar should say "Thumbnails: N loaded").
-- Check that the PNG file name exactly matches the last segment of the UE asset path in the Mesh column (case-sensitive on some platforms).
-- Make sure the Mesh column is not blank for that variant row.
+- Thumbnails need Unreal mode: open the editor from Unreal, not from a plain CSV.
+- Make sure the Mesh column holds a full asset path (e.g. `/Game/.../SM_Ash_Tree_01a.SM_Ash_Tree_01a`).
 
 **Save produced a download instead of a Save As dialog.**
 This is the fallback for browsers where `showSaveFilePicker` is blocked (e.g. some security policies). The file is complete and correct — find it in your Downloads folder.

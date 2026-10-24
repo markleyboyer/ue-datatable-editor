@@ -62,7 +62,7 @@ GitHub Pages serves over HTTPS, which is what the in-place save path needs — r
 
 ### Thumbnail Support
 
-Click **Thumbnails Folder** and select the `SpeciesScreenShots/Thumbnails/` folder. All PNG files are preloaded into memory. Thumbnails then appear in the inline Mesh Variants sub-grid as a small preview column; hovering over any thumbnail shows a large 400×400 popup.
+In Unreal mode the bridge renders each mesh's thumbnail in Unreal and caches the PNG. Thumbnails appear in the inline Mesh Variants sub-grid as a small preview column; hovering over any thumbnail shows a large 400×400 popup. Opened from a plain CSV, the column stays empty.
 
 ---
 
@@ -110,7 +110,7 @@ Click the **▶** chevron next to any species row name to expand an inline sub-g
 
 | Column | Description |
 |--------|-------------|
-| (thumbnail) | Mesh preview image, if thumbnails folder is loaded |
+| (thumbnail) | Mesh preview image, rendered by Unreal (Unreal mode only) |
 | Mesh Asset Path | Full UE asset path to the static mesh |
 | Age Class | Seedling / Sapling / Mature / Dead (dropdown) |
 | Age Wt | AgeClassWeight |
