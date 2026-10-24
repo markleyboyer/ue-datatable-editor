@@ -315,7 +315,8 @@ let modalAnchorCell = null;
 let chart1 = null, chart2 = null;
 
 const AGE_CLASSES       = ['Seedling', 'Sapling', 'Mature', 'Dead'];
-const DISPERSION_TYPES  = ['Clumping', 'Uniform', 'Random', 'Poisson'];
+// Aziel's EN_DispersionType, in enum order (0, 1, 2). There is no Poisson value.
+const DISPERSION_TYPES  = ['Clumping', 'Random', 'Uniform'];
 const RANGE_FIELDS = new Set(['SlopeRange', 'AspectRange', 'WetnessRange', 'MicroTopoRange']);
 // Fields that always serialize as 6-decimal floats in UE
 const FLOAT_FIELDS = new Set([
@@ -2202,7 +2203,7 @@ function ueKeptFraction(type, targetR) {
     const k = 1 + s * 8;                                      // sharpness
     return (2 * Math.PI * f * f / ((k + 1) * (k + 2))) / 0.20;
   }
-  return 1;                                                   // Random / Poisson
+  return 1;                                                   // Random
 }
 
 // Generate a dispersion pattern as N points in [0,1]² based on UE field values.
@@ -2267,7 +2268,7 @@ function generateDispersionPoints(type, targetR, scale, warp, seed, count, gridS
       pts.push([cx + dx, cy + dy]);
     }
 
-  } else if (type === 'Random' || type === 'Poisson') {
+  } else if (type === 'Random') {
     // UE: cell-based random density. At small cell sizes it reads as uniform
     // random; at larger cell sizes it produces visible high/low-density patches.
     const cell = scale > 0 ? scale : Math.max(rMin, 1);
@@ -2429,6 +2430,16 @@ function renderDispersionForSelection() {
     const seed       = parseInt  (d.DispersionSeed, 10)      || 0;
     const stemsPerHa = parseFloat(d.StemsPerHectare)         || 0;
     const color      = PATTERN_COLORS[idx % PATTERN_COLORS.length];
+
+    // A value outside EN_DispersionType never reaches Aziel's shader, so there
+    // is no pattern to preview.
+    if (!DISPERSION_TYPES.includes(type)) {
+      infoLines.push(
+        `<span style="color:#e06060">⚠ ${esc(n === 1 ? '' : node.data._key + ': ')}"${esc(type)}" is not an Aziel dispersion type. ` +
+        `Use ${DISPERSION_TYPES.join(', ')}; Unreal won't import this value.</span>`
+      );
+      return;
+    }
 
     // Draw what UE will actually spawn, not the requested count
     const kept  = ueKeptFraction(type, targetR);
